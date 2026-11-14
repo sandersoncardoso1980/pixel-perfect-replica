@@ -28,3 +28,8 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+
+## Application architecture
+- Keep the demo workspace state in a shared React provider above the route outlet so CRM saves, discards, and radar preferences survive in-app navigation without implying persistent storage.
+- Keep example opportunity data and filtering in a browser-safe module, with fictional contacts and explicit demo labeling to avoid presenting fabricated sources as real buying signals.
+- Use separate TanStack content routes under a shared application shell for the radar, niche configuration, CRM, and settings so navigation and page metadata remain independent.

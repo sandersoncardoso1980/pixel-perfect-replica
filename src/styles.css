@@ -186,4 +186,21 @@
 .radar-sweep { transform-origin: center; animation: radar-turn 12s linear infinite; }
 @keyframes radar-turn { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
-@media (max-width: 767px) { .app-sidebar { width: 76px; } .app-main { margin-left: 76px; } .sidebar-label, .sidebar-detail { display: none; } }
+@media (max-width: 767px) {
+  .app-sidebar { width: 60px; }
+  .app-sidebar > a { padding-inline: 15px; }
+  .app-sidebar nav { padding-inline: 6px; }
+  .app-sidebar .nav-item { justify-content: center; padding-inline: 8px; }
+  .app-sidebar > div:last-child { padding-inline: 14px; }
+  .app-main { margin-left: 60px; }
+  .sidebar-label, .sidebar-detail { display: none; }
+  .app-main main > div:first-child > div:last-child { flex-wrap: wrap; }
+  .lead-card > div:last-child:not(:first-child) { flex-wrap: wrap; }
+  .lead-card > div:last-child:not(:first-child) > button:first-child { flex-basis: 100%; }
+  .lead-card h3 { overflow-wrap: anywhere; }
+}
+@media (max-width: 480px) {
+  .app-main main > .grid.grid-cols-2 { grid-template-columns: 1fr; }
+  .app-main h1 { font-size: 23px; }
+  .app-main main { padding-inline: 16px; }
+}

@@ -33,7 +33,7 @@ export async function searchRealLeads(input: { service: string; keywords: string
     prompt: listing,
     providerOptions: { openai: { store: false, forceReasoning: true, reasoningEffort: 'low', include: ['reasoning.encrypted_content'] } },
   });
-  const out = await res.output;
+  let out; try { out = await res.output; } catch (e) { console.error('AI output failed', e, await res.finishReason.catch(() => null)); throw new Error('A análise por IA falhou. Tente novamente.'); }
   return out.items.filter(x => x.isOpportunity && results[x.index]).map((x, n) => {
     const src = results[x.index]!; const host = new URL(src.url).hostname.replace(/^www\./, '');
     return { id: 10000 + n, name: x.company, initials: x.company.split(/\s+/).map(s => s[0]).join('').slice(0, 2).toUpperCase(), niche: x.niche || input.service, city: x.city || region, score: Math.round(x.score), urgency: x.urgency, signal: x.signal, source: host, age: 'Último ano', person: x.person, role: x.role, email: '', phone: '', value: x.value, url: src.url, real: true };

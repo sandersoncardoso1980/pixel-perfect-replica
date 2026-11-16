@@ -31,5 +31,5 @@ use the editor.
 
 ## Application architecture
 - Keep the demo workspace state in a shared React provider above the route outlet so CRM saves, discards, and radar preferences survive in-app navigation without implying persistent storage.
-- Keep example opportunity data and filtering in a browser-safe module, with fictional contacts and explicit demo labeling to avoid presenting fabricated sources as real buying signals.
+- Keep example opportunity data in a browser-safe module labeled as demo; real opportunities come from a server-only web search (Firecrawl + AI qualification) triggered on demand, kept in session state only.
 - Use separate TanStack content routes under a shared application shell for the radar, niche configuration, CRM, and settings so navigation and page metadata remain independent.

@@ -4,7 +4,10 @@ import { z } from 'zod';
 import type { Lead } from './leads';
 
 const FIRECRAWL_SEARCH_URL = 'https://api.firecrawl.dev/v2/search';
-const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
+const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+const DEFAULT_FALLBACK_MODELS = ['gemini-2.5-flash'];
+const FIRECRAWL_TIMEOUT_MS = 25_000;
+const GEMINI_TIMEOUT_MS = 45_000;
 
 const qualified = z.object({
   index: z.number(),
@@ -22,105 +25,189 @@ const qualified = z.object({
 
 type WebResult = { url: string; title?: string; description?: string };
 
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
+
+function statusOf(err: unknown, depth = 0): number | undefined {
+  if (!err || depth > 4) return undefined;
+  const e = err as { statusCode?: unknown; lastError?: unknown; errors?: unknown };
+  if (typeof e.statusCode === 'number') return e.statusCode;
+  const fromLast = statusOf(e.lastError, depth + 1);
+  if (fromLast) return fromLast;
+  if (Array.isArray(e.errors)) {
+    for (const x of [...e.errors].reverse()) {
+      const s = statusOf(x, depth + 1);
+      if (s) return s;
+    }
+  }
+  return undefined;
+}
+
 export async function searchRealLeads(input: {
   service: string;
   keywords: string;
   regions: string;
 }): Promise<Lead[]> {
-  const firecrawlKey = process.env['FIRECRAWL_API_KEY'];
-  const geminiKey = process.env['GEMINI_API_KEY'];
+  const firecrawlKey = process.env['FIRECRAWL_API_KEY']?.trim();
+  const geminiKey = process.env['GEMINI_API_KEY']?.trim();
   if (!firecrawlKey || !geminiKey) {
     throw new Error('Busca na web não configurada. Defina FIRECRAWL_API_KEY e GEMINI_API_KEY.');
   }
 
-  const kws = input.keywords.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 3);
+  const modelName = process.env['GEMINI_MODEL']?.trim() || DEFAULT_GEMINI_MODEL;
+  const fallbackFromEnv = (process.env['GEMINI_FALLBACK_MODELS'] ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const models = [
+    ...new Set([modelName, ...(fallbackFromEnv.length ? fallbackFromEnv : DEFAULT_FALLBACK_MODELS)]),
+  ];
+
+  const kws = input.keywords.split(',').map((s) => s.trim()).filter(Boolean);
   const regionList = input.regions.split(';').map((s) => s.trim()).filter(Boolean);
   const region = regionList[0] ?? '';
+
   const queries = [
     ...new Set([
-      `licitação ${input.service} ${region}`,
-      `cotação ${input.service} ${region}`,
       `${input.service} ${region}`,
-      ...kws.map((k) => `${k} ${region}`),
+      ...kws.map((k) => `${input.service} ${k} ${region}`),
+      ...kws.slice(0, 2).map((k) => `${k} ${region}`),
       ...regionList.slice(1, 3).map((r) => `${input.service} ${r}`),
     ]),
-  ].slice(0, 5);
+  ].filter(Boolean).slice(0, 4);
+
+  console.log('[DorRadar] Buscando no Firecrawl:', queries);
 
   const failures: number[] = [];
   const results = (
     await Promise.all(
       queries.map(async (query): Promise<WebResult[]> => {
-        const r = await fetch(FIRECRAWL_SEARCH_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${firecrawlKey}` },
-          body: JSON.stringify({ query, limit: 8, country: 'BR', lang: 'pt', tbs: 'qdr:y' }),
-        });
-        if (!r.ok) {
-          console.error(`Firecrawl ${r.status}: ${(await r.text()).slice(0, 200)}`);
-          failures.push(r.status);
+        try {
+          const r = await fetch(FIRECRAWL_SEARCH_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${firecrawlKey}` },
+            body: JSON.stringify({ query, limit: 6, country: 'BR', lang: 'pt', tbs: 'qdr:y' }),
+            signal: AbortSignal.timeout(FIRECRAWL_TIMEOUT_MS),
+          });
+          if (!r.ok) {
+            console.error(`[DorRadar] Firecrawl ${r.status}: ${(await r.text()).slice(0, 200)}`);
+            failures.push(r.status);
+            return [];
+          }
+          const j = (await r.json()) as { data?: { web?: WebResult[] } };
+          return j.data?.web ?? [];
+        } catch (e) {
+          console.error(`[DorRadar] Firecrawl falhou/timeout em "${query}":`, e);
+          failures.push(0);
           return [];
         }
-        const j = (await r.json()) as { data?: { web?: WebResult[] } };
-        return j.data?.web ?? [];
       }),
     )
   )
     .flat()
     .filter((v, i, a) => a.findIndex((x) => x.url === v.url) === i)
-    .slice(0, 30);
+    .slice(0, 15);
+
+  console.log('[DorRadar] Resultados únicos enviados para a IA:', results.length);
 
   if (!results.length) {
     if (failures.includes(402)) throw new Error('Os créditos do Firecrawl acabaram. Verifique seu plano no Firecrawl.');
     if (failures.includes(401)) throw new Error('FIRECRAWL_API_KEY inválida.');
     if (failures.includes(429)) throw new Error('Muitas buscas seguidas. Aguarde 1 minuto e tente novamente.');
+    if (failures.includes(0)) throw new Error('O Firecrawl não respondeu a tempo. Tente novamente.');
     if (failures.length) throw new Error('A busca na web falhou. Tente novamente.');
     return [];
   }
 
   const google = createGoogleGenerativeAI({ apiKey: geminiKey });
+  
   const listing = results
-    .map((r, i) => `[${i}] ${r.title ?? ''}\n${r.description ?? ''}\n${r.url}`)
+    .map((r, i) => `[${i}] Título: ${r.title ?? ''}\nResumo: ${(r.description ?? '').slice(0, 250)}\nURL: ${r.url}`)
     .join('\n\n');
 
-  let aiError: unknown = null;
-  const res = streamText({
-    onError: ({ error }) => {
-      aiError = error;
-    },
-    model: google(process.env['GEMINI_MODEL'] ?? DEFAULT_GEMINI_MODEL),
-    output: Output.object({ schema: z.object({ items: z.array(qualified) }) }),
-    system: `Você qualifica sinais de compra B2B para quem vende "${input.service}". Para cada resultado, seja PERMISSIVO: marque isOpportunity=true para qualquer empresa, órgão ou organização citada que possa ser um possível cliente, mesmo com sinal fraco ou indireto (o usuário filtra manualmente). Marque false apenas para páginas sem nenhuma organização identificável. Fornecedores concorrentes podem entrar com score baixo (10-30). Use o score para refletir a força do sinal: forte (licitação, cotação, pedido de orçamento) 70-100, médio 40-69, fraco 10-39, e urgency Baixa para sinais fracos. Se não houver empresa nomeada, use o título da página como company. Use apenas fatos do texto; se nome de pessoa/cargo não aparecer, use "Não identificado". score de 0 a 100. value = valor estimado em reais (0 se desconhecido). Responda em português.`,
-    prompt: listing,
-  });
+  const system = `Você qualifica oportunidades comerciais para um negócio que oferece: "${input.service}". O foco da busca é: "${input.keywords}". 
+Para cada resultado, seja PERMISSIVO e analítico: marque isOpportunity=true para qualquer pessoa física, perfil, anúncio, evento ou estabelecimento que represente uma oportunidade válida dentro da região alvo. 
+No campo 'city', extraia a cidade mencionada no texto. Se não houver cidade clara no texto, retorne exatamente a string vazia "" para que o sistema preencha com a região principal buscada.
+No campo 'company', se for uma pessoa física ou perfil sem nome de empresa comercial, utilize o nome da pessoa ou o identificador da página. No campo 'signal', descreva a oportunidade identificada. 
+Use o score de 0 a 100 para força do sinal, e urgency correspondente (Alta, Média, Baixa). Use apenas fatos do texto; se nome não aparecer, use "Não identificado". value = valor estimado em reais (0 se desconhecido). Responda estritamente em português.`;
 
   let out;
-  try {
-    out = await res.output;
-  } catch (e) {
-    console.error('AI output failed', e, await res.finishReason.catch(() => null));
-    const status = (aiError as { statusCode?: number } | null)?.statusCode;
-    if (status === 429) throw new Error('Limite de uso do Gemini atingido. Aguarde um pouco e tente novamente.');
-    if (status === 400 || status === 401 || status === 403) {
-      throw new Error('GEMINI_API_KEY inválida ou sem permissão para o modelo configurado.');
+  let lastStatus: number | undefined;
+
+  for (const m of models) {
+    console.log('[DorRadar] Chamando Gemini, modelo:', m);
+
+    let aiError = null as unknown;
+    const res = streamText({
+      abortSignal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+      maxRetries: 1,
+      onError: ({ error }) => {
+        aiError = error;
+      },
+      model: google(m),
+      output: Output.object({ schema: z.object({ items: z.array(qualified) }) }),
+      system,
+      prompt: listing,
+    });
+
+    try {
+      out = await res.output;
+      console.log(
+        `[DorRadar] IA (${m}) devolveu`,
+        out.items.length,
+        'itens;',
+        out.items.filter((x) => x.isOpportunity).length,
+        'como oportunidade válida',
+      );
+      break;
+    } catch (e) {
+      const status = statusOf(aiError) ?? statusOf(e);
+      console.error(`[DorRadar] Modelo ${m} falhou (status ${status ?? 'timeout/rede'}):`, aiError ?? e);
+
+      if (status === 400 || status === 401 || status === 403) {
+        throw new Error('GEMINI_API_KEY inválida ou sem permissão para o modelo configurado.');
+      }
+      lastStatus = status;
     }
-    throw new Error('A análise por IA falhou. Tente novamente.');
   }
+
+  if (!out) {
+    if (lastStatus === 429) throw new Error('Limite de uso do Gemini atingido. Aguarde um pouco e tente novamente.');
+    if (lastStatus === 503 || lastStatus === 500) {
+      throw new Error('O Gemini está sobrecarregado no momento. Tente novamente em alguns minutos.');
+    }
+    if (lastStatus === 404) throw new Error('Nenhum modelo Gemini encontrado. Verifique GEMINI_MODEL.');
+    throw new Error('A análise por IA falhou ou demorou demais. Tente novamente.');
+  }
+
+  // Lista de termos inválidos que a IA costuma inventar quando falta dado
+  const invalidCityTerms = ['não definido', 'não informado', 'desconhecido', 'n/a', 'nao definido', 'nao informado', 'não especificado'];
 
   return out.items
     .filter((x) => x.isOpportunity && results[x.index])
     .map((x, n) => {
       const src = results[x.index]!;
-      const host = new URL(src.url).hostname.replace(/^www\./, '');
+      const rawCity = (x.city ?? '').trim();
+      
+      // Valida se a cidade retornada pela IA é real ou lixo/vazia
+      const isInvalid = !rawCity || invalidCityTerms.includes(rawCity.toLowerCase());
+      const resolvedCity = isInvalid ? region : rawCity;
+
       return {
         id: 10000 + n,
         name: x.company,
         initials: x.company.split(/\s+/).map((s) => s[0]).join('').slice(0, 2).toUpperCase(),
         niche: input.service,
-        city: x.city || region,
+        city: resolvedCity,
         score: Math.round(x.score),
         urgency: x.urgency,
         signal: x.signal,
-        source: host,
+        source: hostOf(src.url),
         age: 'Último ano',
         person: x.person,
         role: x.role,

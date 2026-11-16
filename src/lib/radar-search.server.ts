@@ -11,7 +11,7 @@ const item = z.object({
 });
 
 export async function searchRealLeads(input: { service: string; keywords: string; regions: string }): Promise<Lead[]> {
-  const lovableKey = process.env.LOVABLE_API_KEY; const fcKey = process.env.FIRECRAWL_API_KEY;
+  const lovableKey = process.env['LOVABLE_API_KEY']; const fcKey = process.env['FIRECRAWL_API_KEY'];
   if (!lovableKey || !fcKey) throw new Error('Busca na web não configurada.');
   const kws = input.keywords.split(',').map(s => s.trim()).filter(Boolean).slice(0, 3);
   const region = input.regions.split(';')[0]?.trim() ?? '';
@@ -35,7 +35,7 @@ export async function searchRealLeads(input: { service: string; keywords: string
   });
   const out = await res.output;
   return out.items.filter(x => x.isOpportunity && results[x.index]).map((x, n) => {
-    const src = results[x.index]; const host = new URL(src.url).hostname.replace(/^www\./, '');
+    const src = results[x.index]!; const host = new URL(src.url).hostname.replace(/^www\./, '');
     return { id: 10000 + n, name: x.company, initials: x.company.split(/\s+/).map(s => s[0]).join('').slice(0, 2).toUpperCase(), niche: x.niche || input.service, city: x.city || region, score: Math.round(x.score), urgency: x.urgency, signal: x.signal, source: host, age: 'Último mês', person: x.person, role: x.role, email: '', phone: '', value: x.value, url: src.url, real: true };
   });
 }

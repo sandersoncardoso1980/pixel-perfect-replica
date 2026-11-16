@@ -27,14 +27,16 @@ export async function searchRealLeads(input: { service: string; keywords: string
 
   const provider = createOpenAI({ baseURL: 'https://ai.gateway.lovable.dev/v1', apiKey: lovableKey, headers: { 'Lovable-API-Key': lovableKey, 'X-Lovable-AIG-SDK': 'vercel-ai-sdk' } });
   const listing = results.map((r, i) => `[${i}] ${r.title ?? ''}\n${r.description ?? ''}\n${r.url}`).join('\n\n');
+  let aiError: unknown = null;
   const res = streamText({
+    onError: ({ error }) => { aiError = error; },
     model: provider.responses('openai/gpt-6-astra'),
     output: Output.object({ schema: z.object({ items: z.array(item) }) }),
     system: `Você qualifica sinais de compra B2B para quem vende "${input.service}". Para cada resultado, seja PERMISSIVO: marque isOpportunity=true para qualquer empresa, órgão ou organização citada que possa ser um possível cliente, mesmo com sinal fraco ou indireto (o usuário filtra manualmente). Marque false apenas para páginas sem nenhuma organização identificável. Fornecedores concorrentes podem entrar com score baixo (10-30). Use o score para refletir a força do sinal: forte (licitação, cotação, pedido de orçamento) 70-100, médio 40-69, fraco 10-39, e urgency Baixa para sinais fracos. Se não houver empresa nomeada, use o título da página como company. Use apenas fatos do texto; se nome de pessoa/cargo não aparecer, use "Não identificado". score de 0 a 100. value = valor estimado em reais (0 se desconhecido). Responda em português.`,
     prompt: listing,
     providerOptions: { openai: { store: false, forceReasoning: true, reasoningEffort: 'low', include: ['reasoning.encrypted_content'] } },
   });
-  let out; try { out = await res.output; } catch (e) { console.error('AI output failed', e, await res.finishReason.catch(() => null)); throw new Error('A análise por IA falhou. Tente novamente.'); }
+  let out; try { out = await res.output; } catch (e) { console.error('AI output failed', e, await res.finishReason.catch(() => null)); const status = (aiError as { statusCode?: number } | null)?.statusCode; if (status === 402) throw new Error('Os créditos de IA do workspace acabaram. Adicione créditos em Configurações → Planos e créditos para continuar buscando.'); if (status === 429) throw new Error('Muitas análises seguidas. Aguarde 1 minuto e tente novamente.'); throw new Error('A análise por IA falhou. Tente novamente.'); }
   return out.items.filter(x => x.isOpportunity && results[x.index]).map((x, n) => {
     const src = results[x.index]!; const host = new URL(src.url).hostname.replace(/^www\./, '');
     return { id: 10000 + n, name: x.company, initials: x.company.split(/\s+/).map(s => s[0]).join('').slice(0, 2).toUpperCase(), niche: x.niche || input.service, city: x.city || region, score: Math.round(x.score), urgency: x.urgency, signal: x.signal, source: host, age: 'Último ano', person: x.person, role: x.role, email: '', phone: '', value: x.value, url: src.url, real: true };

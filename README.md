@@ -1,24 +1,31 @@
-# Pixel Perfect Replica
+# DorRadar
 
-Implement exactly the screenshot and nothing else
+Radar de oportunidades B2B: encontra empresas e órgãos com sinais de compra (licitações, cotações, pedidos de orçamento) para quem presta serviços, e ajuda a abordá-los.
 
-This project was built with [Lovable](https://lovable.dev).
+O projeto nasceu de um protótipo gerado no Lovable e hoje é mantido de forma independente.
 
-## Build with Lovable
+## Stack
 
-Continue developing this project in the [Lovable editor](https://lovable.dev/projects/1ff18978-0447-4971-81dd-f045a53c2153).
+- TanStack Start (React 19, TanStack Router) + Tailwind 4 + shadcn/ui
+- Busca na web: [Firecrawl](https://firecrawl.dev)
+- Qualificação de leads por IA: Google Gemini (via AI SDK)
+- Banco e login (em implantação): Supabase
+- Hospedagem: Vercel
 
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: every change made in Lovable is committed straight to this repository.
-- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
-
-## Development
-
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+## Desenvolvimento
 
 ```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
+npm i        # ou: bun install
+cp .env.example .env   # preencha as chaves
 npm run dev
 ```
+
+Scripts: `npm run lint`, `npm test`, `npm run build`.
+
+## Variáveis de ambiente
+
+Veja `.env.example`. Sem `FIRECRAWL_API_KEY` e `GEMINI_API_KEY`, o botão "Buscar oportunidades reais" retorna erro de configuração; os leads demonstrativos continuam funcionando.
+
+## Deploy na Vercel
+
+Importe o repositório, configure as variáveis acima em Project Settings → Environment Variables e faça o deploy. O Nitro detecta a Vercel no build e gera a saída correta.

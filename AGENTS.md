@@ -1,35 +1,12 @@
-<!-- LOVABLE:BEGIN -->
-> [!IMPORTANT]
-> This project is connected to [Lovable](https://lovable.dev). Avoid rewriting
-> published git history — force pushing, or rebasing/amending/squashing commits
-> that are already pushed — as it rewrites history on Lovable's side and the
-> user will likely lose their project history.
->
-> Commits you push to the connected branch sync back to Lovable and show up in
-> the editor, so keep the branch in a working state.
+# Instruções para agentes e colaboradores
 
-## What Lovable manages
+## Regras do projeto
+- Não commite segredos. Chaves vão em `.env` (local) e nas variáveis de ambiente da Vercel; mantenha `.env.example` atualizado.
+- Chaves de API (`FIRECRAWL_API_KEY`, `GEMINI_API_KEY`, e a service key do Supabase quando existir) só são usadas em código de servidor (`*.server.ts` e server functions), nunca no navegador.
+- Mudanças de esquema do banco entram como migrations versionadas em `supabase/migrations/`.
+- Antes de abrir PR: `npm run lint`, `npm test` e `npm run build` precisam passar.
 
-Rules outside this block are the project's own. Change the pieces below in
-Lovable, not by hand. With the [Lovable MCP](https://mcp.lovable.dev)
-connected, `send_message` asks Lovable to do it; otherwise ask the user to
-use the editor.
-
-- **Database.** Do not add or edit `supabase/migrations/` or `drizzle/`.
-  Ask Lovable to change the schema.
-- **Generated files.** Do not edit a file whose header says it is automatically
-  generated.
-- **AI gateway.** Keep model calls on Lovable's gateway, and keep
-  `LOVABLE_API_KEY` out of browser code.
-- **Connectors.** Lovable provides native connectors. `list_connectors` shows
-  which are enabled; `add_connector` only returns the dashboard link. When a
-  connector is enabled, calls go through the connector gateway and need
-  `LOVABLE_API_KEY`. When Lovable does not provide one, users can bring their
-  own key and store it in Secrets.
-- **Secrets.** Lovable manages them. Do not put secret values in the repo.
-<!-- LOVABLE:END -->
-
-## Application architecture
-- Keep the demo workspace state in a shared React provider above the route outlet so CRM saves, discards, and radar preferences survive in-app navigation without implying persistent storage.
-- Keep example opportunity data in a browser-safe module labeled as demo; real opportunities come from a server-only web search (Firecrawl + AI qualification) triggered on demand, kept in session state only.
-- Use separate TanStack content routes under a shared application shell for the radar, niche configuration, CRM, and settings so navigation and page metadata remain independent.
+## Arquitetura da aplicação
+- O estado do workspace fica em um provider React compartilhado acima do outlet das rotas, para que navegação dentro do app preserve salvos, descartes e preferências do radar. Esse estado está sendo migrado para o Supabase para persistir de verdade.
+- Os leads de exemplo ficam em um módulo seguro para o navegador, rotulado como demonstrativo. Os leads reais vêm de uma busca somente no servidor (Firecrawl + qualificação com Gemini), disparada sob demanda.
+- Rotas de conteúdo separadas do TanStack (radar, nichos, CRM, configurações) sob um shell comum, para que navegação e metadados de página sejam independentes.

@@ -4,7 +4,7 @@ import { leadToInsert, rowToLead, type LeadRow } from './workspace-mappers';
 
 // Somente servidor: usa a service role, que ignora o RLS. Nunca importe este módulo no navegador.
 let client: SupabaseClient | undefined;
-function db(): SupabaseClient {
+export function db(): SupabaseClient {
   const url = process.env['SUPABASE_URL'];
   const key = process.env['SUPABASE_SERVICE_ROLE_KEY'];
   if (!url || !key) throw new Error('Banco não configurado. Defina SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY.');

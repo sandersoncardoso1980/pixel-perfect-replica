@@ -1,10 +1,10 @@
 import { useState, type ReactNode } from 'react';
 import { Link, useRouterState } from '@tanstack/react-router';
-import { Radar, SlidersHorizontal, Bookmark, Settings, PanelLeftClose, PanelLeftOpen, ChevronDown, ArrowUpRight, CircleHelp, Bell, X, Check } from 'lucide-react';
+import { Radar, PanelLeftClose, PanelLeftOpen, ChevronDown, ArrowUpRight, CircleHelp, Bell, Check, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { useRadar } from './context';
-const links = [{ to: '/' as const, label: 'Radar de Oportunidades', icon: Radar }, { to: '/nichos' as const, label: 'Meus Nichos & Gatilhos', icon: SlidersHorizontal }, { to: '/crm' as const, label: 'Leads Salvos', icon: Bookmark }, { to: '/configuracoes' as const, label: 'Configurações', icon: Settings }];
+const links = [{ to: '/' as const, label: 'Análise de Preços', icon: Search }];
 export function AppShell({ children }: { children: ReactNode }) { const path = useRouterState({ select: s => s.location.pathname }); const [collapsed, setCollapsed] = useState(false); const [help, setHelp] = useState(false); const [notifications, setNotifications] = useState(false); const { saved, monitoring } = useRadar(); return <div className={collapsed ? 'sidebar-collapsed' : ''}>
 <aside className="app-sidebar"><Link to="/" className="flex h-[86px] items-center gap-2.5 px-6"><div className="relative text-primary"><Radar size={29} strokeWidth={2}/></div><span className="sidebar-label text-[23px] font-bold">DorRadar<span className="text-primary">.</span></span></Link>
 <div className="sidebar-detail px-7 pb-3 text-[10px] font-semibold uppercase tracking-widest text-sidebar-muted">Workspace</div><nav className="space-y-1 px-3">{links.map(l => <Link key={l.to} to={l.to} className={`nav-item ${path === l.to ? 'active' : ''}`} title={l.label}><l.icon size={18}/><span className="sidebar-label flex-1">{l.label}</span>{l.to === '/crm' && saved.length > 0 && <span className="sidebar-label rounded bg-sidebar-accent px-1.5 text-xs">{saved.length}</span>}</Link>)}</nav>

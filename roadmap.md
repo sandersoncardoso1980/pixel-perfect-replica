@@ -1,6 +1,16 @@
 # DorRadar
 
-## Feito
+## Direção atual: análise de preços de mercado
+- [x] Análise sob demanda: nicho + produto + região → balanço de preços com ofertas e links.
+- [x] Estatísticas em código com testes; preço só aceito se estiver escrito na página.
+- [x] Histórico de análises no Supabase (migration 0002).
+- [ ] Validar com 3 clientes reais: os resultados são úteis e confiáveis o bastante para pagarem?
+- [ ] Qualidade da coleta: testar produtos reais e ajustar consultas, filtros e prompt.
+- [ ] Comparar duas análises (variação de preço ao longo do tempo) e alertas.
+- [ ] Login e multiusuário antes de abrir para clientes.
+- [ ] Limpar a interface: remover cartões e textos decorativos do radar antigo.
+
+## Feito (radar de leads, em espera)
 - [x] Radar com seis leads demonstrativos em português e filtros.
 - [x] Modal de abordagem, CRM de sessão e descarte.
 - [x] Telas de nichos e configurações.

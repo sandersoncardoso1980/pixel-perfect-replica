@@ -403,7 +403,7 @@ export function RadarPage({ crm = false }: { crm?: boolean }) {
       <footer className="mt-6 flex flex-wrap items-center justify-between gap-2 border-t pt-4 text-[10px] text-muted-foreground">
         <span className="flex items-center gap-1.5">
           <Radar size={13} />
-          DorRadar · Menos prospecção. Mais conexão.
+          PriceSearch · Menos prospecção. Mais conexão.
         </span>
         <span>{realLeads ? 'Monitoramento em tempo real ativo' : 'Ambiente demonstrativo · Contatos fictícios'}</span>
       </footer>

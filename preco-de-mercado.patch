@@ -1,0 +1,1667 @@
+From 534390f2e502019eb2b2f17830b3eb45b908e6fd Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 17 Nov 2026 01:47:28 -0300
+Subject: [PATCH] =?UTF-8?q?Muda=20o=20foco=20para=20an=C3=A1lise=20de=20pr?=
+ =?UTF-8?q?e=C3=A7os=20de=20mercado?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Tela inicial: nicho + produto + região -> balanço de preços com ofertas e links
+- Coleta pelo Firecrawl (busca com conteúdo) e leitura dos preços pelo Gemini
+- Barreira anti-invenção: o preço só vale se estiver escrito no texto da página
+- Estatísticas em código puro (mediana, quartis, outliers, histograma, promoções) com 17 testes
+- Leitura opcional da IA, aceita somente se citar valores existentes nos dados
+- Histórico de análises no Supabase (migration 0002, RLS sem policies)
+- Exportação em CSV com proteção contra injeção de fórmula
+- Navegação reduzida à nova tela; radar de leads fica no código, fora do menu
+- Adiciona .gitattributes (LF) para evitar ruído de quebra de linha no Windows
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013GYDXxDMLUzJLAEVk4HKYP
+---
+ .gitattributes                              |   1 +
+ README.md                                   |  22 +-
+ roadmap.md                                  |  12 +-
+ src/components/dorradar/price-page.tsx      | 436 ++++++++++++++++++++
+ src/components/dorradar/shell.tsx           |   4 +-
+ src/lib/price-analyses.server.ts            |  53 +++
+ src/lib/price-search.server.ts              | 347 ++++++++++++++++
+ src/lib/price-stats.ts                      | 351 ++++++++++++++++
+ src/lib/price.functions.ts                  |  61 +++
+ src/lib/workspace.server.ts                 |   2 +-
+ src/routes/index.tsx                        |  31 +-
+ src/test/price-stats.test.ts                | 163 ++++++++
+ supabase/migrations/0002_analises_preco.sql |  18 +
+ 13 files changed, 1481 insertions(+), 20 deletions(-)
+ create mode 100644 .gitattributes
+ create mode 100644 src/components/dorradar/price-page.tsx
+ create mode 100644 src/lib/price-analyses.server.ts
+ create mode 100644 src/lib/price-search.server.ts
+ create mode 100644 src/lib/price-stats.ts
+ create mode 100644 src/lib/price.functions.ts
+ create mode 100644 src/test/price-stats.test.ts
+ create mode 100644 supabase/migrations/0002_analises_preco.sql
+
+diff --git a/.gitattributes b/.gitattributes
+new file mode 100644
+index 0000000..6313b56
+--- /dev/null
++++ b/.gitattributes
+@@ -0,0 +1 @@
++* text=auto eol=lf
+diff --git a/README.md b/README.md
+index 452ba63..ec3ae7a 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,20 @@
+ # DorRadar
+ 
+-Radar de oportunidades B2B: encontra empresas e órgãos com sinais de compra (licitações, cotações, pedidos de orçamento) para quem presta serviços, e ajuda a abordá-los.
++Análise de preços de mercado: o usuário informa nicho, produto e região, e o sistema lê preços em páginas públicas e devolve um balanço (preço típico, faixa, mais barato, promoções, ofertas com link).
++
++> O código do radar de leads (B2B) continua no repositório (`radar.tsx`, `/crm`, `/nichos`, `/configuracoes`), mas saiu da navegação. A tela inicial agora é a análise de preços.
++
++## Como a análise funciona
++
++1. O Firecrawl busca páginas públicas que vendem o produto na região e devolve o texto delas.
++2. O Gemini **só lê** os preços escritos em cada página (preço, preço "de", condição, tipo de loja).
++3. O sistema **confere** que cada preço aparece no texto da página. O que não aparece é descartado.
++4. Mediana, quartis, mínimo, máximo, média, histograma e promoções são calculados em código (`src/lib/price-stats.ts`), nunca pela IA.
++5. Uma "leitura" opcional da IA só é exibida se todo valor em reais citado existir nos dados.
++
++Limites a ter em mente: é um retrato do que apareceu na busca, não uma pesquisa completa; frete e parcelamento não entram; páginas que exigem login ou carregam preço por JavaScript pesado podem não ser lidas.
++
++**Custo estimado por análise** (a partir da documentação do Firecrawl: 2 créditos por 10 resultados de busca + 1 crédito por página lida): cerca de 20 créditos. No plano gratuito, de 1.000 créditos por mês, isso dá aproximadamente 50 análises.
+ 
+ O projeto nasceu de um protótipo gerado no Lovable e hoje é mantido de forma independente.
+ 
+@@ -8,7 +22,7 @@ O projeto nasceu de um protótipo gerado no Lovable e hoje é mantido de forma i
+ 
+ - TanStack Start (React 19, TanStack Router) + Tailwind 4 + shadcn/ui
+ - Busca na web: [Firecrawl](https://firecrawl.dev)
+-- Qualificação de leads por IA: Google Gemini (via AI SDK)
++- Leitura de preços por IA: Google Gemini (via AI SDK)
+ - Banco: Supabase (login ainda não implementado)
+ - Hospedagem: Vercel
+ 
+@@ -24,11 +38,11 @@ Scripts: `npm run lint`, `npm test`, `npm run build`.
+ 
+ ## Variáveis de ambiente
+ 
+-Veja `.env.example`. Sem `FIRECRAWL_API_KEY` e `GEMINI_API_KEY`, o botão "Buscar oportunidades reais" retorna erro de configuração; os leads demonstrativos continuam funcionando.
++Veja `.env.example`. Sem `FIRECRAWL_API_KEY` e `GEMINI_API_KEY`, a análise retorna erro de configuração. `GEMINI_MODEL` e `GEMINI_FALLBACK_MODELS` (lista separada por vírgulas) são opcionais.
+ 
+ ## Banco de dados (Supabase)
+ 
+-Aplique `supabase/migrations/0001_workspace.sql` no seu projeto (SQL Editor do Supabase ou `supabase db push`) e preencha `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY`. Sem essas variáveis o app funciona só em memória, como antes.
++Aplique `supabase/migrations/0001_workspace.sql` e `supabase/migrations/0002_analises_preco.sql` no seu projeto (SQL Editor do Supabase ou `supabase db push`) e preencha `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY`. Sem essas variáveis a análise de preços ainda funciona, mas não fica salva no histórico.
+ 
+ > **Atenção:** enquanto não houver login, qualquer pessoa com acesso ao app lê e altera os dados do workspace. Use apenas localmente ou em um deploy protegido (ex.: Vercel Deployment Protection) até a fase de login.
+ 
+diff --git a/roadmap.md b/roadmap.md
+index 396cdba..762b2bb 100644
+--- a/roadmap.md
++++ b/roadmap.md
+@@ -1,6 +1,16 @@
+ # DorRadar
+ 
+-## Feito
++## Direção atual: análise de preços de mercado
++- [x] Análise sob demanda: nicho + produto + região → balanço de preços com ofertas e links.
++- [x] Estatísticas em código com testes; preço só aceito se estiver escrito na página.
++- [x] Histórico de análises no Supabase (migration 0002).
++- [ ] Validar com 3 clientes reais: os resultados são úteis e confiáveis o bastante para pagarem?
++- [ ] Qualidade da coleta: testar produtos reais e ajustar consultas, filtros e prompt.
++- [ ] Comparar duas análises (variação de preço ao longo do tempo) e alertas.
++- [ ] Login e multiusuário antes de abrir para clientes.
++- [ ] Limpar a interface: remover cartões e textos decorativos do radar antigo.
++
++## Feito (radar de leads, em espera)
+ - [x] Radar com seis leads demonstrativos em português e filtros.
+ - [x] Modal de abordagem, CRM de sessão e descarte.
+ - [x] Telas de nichos e configurações.
+diff --git a/src/components/dorradar/price-page.tsx b/src/components/dorradar/price-page.tsx
+new file mode 100644
+index 0000000..ee6d722
+--- /dev/null
++++ b/src/components/dorradar/price-page.tsx
+@@ -0,0 +1,436 @@
++import { useEffect, useState, type FormEvent } from "react";
++import { useServerFn } from "@tanstack/react-start";
++import { toast } from "sonner";
++import { ArrowUpRight, Clock, Download, Info, RefreshCw, Search } from "lucide-react";
++import { Button } from "@/components/ui/button";
++import { Input } from "@/components/ui/input";
++import { Label } from "@/components/ui/label";
++import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
++import { analyzePricesFn, getAnalysisFn, listAnalysesFn } from "@/lib/price.functions";
++import {
++  formatBRL,
++  reachLabel,
++  type AnalysisListItem,
++  type Confidence,
++  type PriceAnalysis,
++  type PriceStats,
++} from "@/lib/price-stats";
++
++const STEPS = [
++  "Buscando páginas públicas com preços…",
++  "Lendo os preços de cada página…",
++  "Conferindo se cada preço está escrito na página…",
++  "Calculando o balanço de mercado…",
++];
++
++const CONFIDENCE: Record<Confidence, { label: string; cls: string }> = {
++  baixa: { label: "Confiança baixa", cls: "border-red-500/40 text-red-700 dark:text-red-400" },
++  media: { label: "Confiança média", cls: "border-amber-500/40 text-amber-700 dark:text-amber-400" },
++  alta: { label: "Confiança alta", cls: "border-green-600/40 text-green-700 dark:text-green-400" },
++};
++
++function safeHref(url: string): string {
++  return /^https?:\/\//i.test(url) ? url : "#";
++}
++
++// Evita que um título vindo da web vire fórmula ao abrir o CSV no Excel.
++function csvCell(v: string | number): string {
++  const s = String(v);
++  const guarded = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
++  return `"${guarded.replace(/"/g, '""')}"`;
++}
++
++function toCsv(a: PriceAnalysis): string {
++  const num = (n: number | null) => (n === null ? "" : n.toFixed(2).replace(".", ","));
++  const head = ["Loja", "Produto", "Preço (R$)", "Preço original (R$)", "Condição", "Alcance", "Cidade", "Link"];
++  const rows = a.offers.map((o) =>
++    [o.store, o.title, num(o.price), num(o.originalPrice), o.condition, o.reach, o.city, o.url].map(csvCell).join(";"),
++  );
++  return "﻿" + [head.map(csvCell).join(";"), ...rows].join("\r\n");
++}
++
++function downloadCsv(a: PriceAnalysis) {
++  const slug = a.product.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
++  const url = URL.createObjectURL(new Blob([toCsv(a)], { type: "text/csv;charset=utf-8" }));
++  const link = document.createElement("a");
++  link.href = url;
++  link.download = `precos-${slug || "analise"}.csv`;
++  link.click();
++  URL.revokeObjectURL(url);
++}
++
++function StatCard({ label, value, hint, strong }: { label: string; value: string; hint?: string; strong?: boolean }) {
++  return (
++    <div className={`rounded-lg border bg-card p-4 xl:p-5 ${strong ? "border-primary/40 ring-1 ring-primary/20" : ""}`}>
++      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
++      <div className="mt-2 text-2xl font-bold tabular-nums">{value}</div>
++      {hint && <div className="mt-1 text-[11px] text-muted-foreground">{hint}</div>}
++    </div>
++  );
++}
++
++function RangeBar({ stats }: { stats: PriceStats }) {
++  const span = stats.max - stats.min;
++  const pct = (v: number) => (span === 0 ? 50 : ((v - stats.min) / span) * 100);
++  return (
++    <div className="rounded-lg border bg-card p-4 xl:p-5">
++      <div className="mb-3 text-xs font-semibold">Onde estão os preços</div>
++      <div className="relative h-3 rounded-full bg-muted" role="img" aria-label={`Preços de ${formatBRL(stats.min)} a ${formatBRL(stats.max)}, mediana ${formatBRL(stats.median)}`}>
++        <div
++          className="absolute top-0 h-3 rounded-full bg-primary/30"
++          style={{ left: `${pct(stats.q1)}%`, width: `${Math.max(2, pct(stats.q3) - pct(stats.q1))}%` }}
++        />
++        <div className="absolute -top-1 h-5 w-0.5 bg-primary" style={{ left: `${pct(stats.median)}%` }} />
++      </div>
++      <div className="mt-2 flex justify-between text-[11px] tabular-nums text-muted-foreground">
++        <span>{formatBRL(stats.min)}</span>
++        <span className="font-medium text-foreground">mediana {formatBRL(stats.median)}</span>
++        <span>{formatBRL(stats.max)}</span>
++      </div>
++      <div className="mt-1 text-[11px] text-muted-foreground">A faixa colorida mostra onde está a metade central das ofertas.</div>
++    </div>
++  );
++}
++
++function Histogram({ stats }: { stats: PriceStats }) {
++  const maxCount = Math.max(...stats.bins.map((b) => b.count), 1);
++  return (
++    <div className="rounded-lg border bg-card p-4 xl:p-5">
++      <div className="mb-3 text-xs font-semibold">Distribuição das ofertas</div>
++      <div className="flex h-32 items-end gap-1.5">
++        {stats.bins.map((b) => (
++          <div key={`${b.from}-${b.to}`} className="flex h-full flex-1 flex-col items-center justify-end">
++            <span className="mb-1 text-[10px] tabular-nums text-muted-foreground">{b.count || ""}</span>
++            <div
++              className="w-full rounded-t bg-primary/70"
++              style={{ height: `${b.count ? Math.max(4, (b.count / maxCount) * 100) : 0}%` }}
++              title={`${formatBRL(b.from)} a ${formatBRL(b.to)}: ${b.count} oferta(s)`}
++            />
++          </div>
++        ))}
++      </div>
++      <div className="mt-1.5 flex gap-1.5">
++        {stats.bins.map((b) => (
++          <div key={`l-${b.from}-${b.to}`} className="flex-1 text-center text-[10px] tabular-nums text-muted-foreground">
++            {Math.round(b.from)}
++          </div>
++        ))}
++      </div>
++      <div className="mt-1 text-[11px] text-muted-foreground">Preço de início de cada faixa, em reais.</div>
++    </div>
++  );
++}
++
++function Results({ a, persisted }: { a: PriceAnalysis; persisted: boolean }) {
++  const s = a.stats;
++  return (
++    <section className="space-y-5" aria-live="polite">
++      <div className="flex flex-wrap items-center justify-between gap-3">
++        <div>
++          <h2 className="text-lg font-bold">
++            {a.product} <span className="font-medium text-muted-foreground">· {a.region}</span>
++          </h2>
++          <p className="text-xs text-muted-foreground">
++            Coletado em {new Date(a.createdAt).toLocaleString("pt-BR")} · {a.pagesScanned} página{a.pagesScanned === 1 ? "" : "s"} lida{a.pagesScanned === 1 ? "" : "s"}
++            {!persisted && " · não foi salvo no histórico (banco não configurado)"}
++          </p>
++        </div>
++        <div className="flex items-center gap-2">
++          {s && (
++            <span className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${CONFIDENCE[s.confidence].cls}`}>
++              {CONFIDENCE[s.confidence].label}
++            </span>
++          )}
++          {a.offers.length > 0 && (
++            <Button variant="outline" size="sm" onClick={() => downloadCsv(a)}>
++              <Download className="mr-1.5 size-3.5" /> Baixar CSV
++            </Button>
++          )}
++        </div>
++      </div>
++
++      {s && (
++        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
++          <StatCard strong label="Preço típico (mediana)" value={formatBRL(s.median)} hint={`média ${formatBRL(s.mean)}`} />
++          <StatCard label="Mais barato" value={formatBRL(s.min)} hint={s.cheapest.store} />
++          <StatCard label="Mais caro" value={formatBRL(s.max)} />
++          <StatCard label="Ofertas comparadas" value={String(s.n)} hint={`em ${s.stores} loja${s.stores === 1 ? "" : "s"}`} />
++        </div>
++      )}
++
++      {s && (
++        <div className="grid gap-3 lg:grid-cols-2">
++          <RangeBar stats={s} />
++          <Histogram stats={s} />
++        </div>
++      )}
++
++      <div className="rounded-lg border bg-card p-4 xl:p-5">
++        <div className="mb-2 text-xs font-semibold">Balanço</div>
++        <ul className="space-y-1.5 text-sm">
++          {a.summary.map((line) => (
++            <li key={line}>{line}</li>
++          ))}
++        </ul>
++        {a.reading && (
++          <div className="mt-4 border-t pt-3">
++            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
++              Leitura da IA · usa só valores encontrados nas páginas
++            </div>
++            <p className="text-sm">{a.reading}</p>
++          </div>
++        )}
++        {a.warnings.length > 0 && (
++          <ul className="mt-3 space-y-1 text-[11px] text-muted-foreground">
++            {a.warnings.map((w) => (
++              <li key={w}>Aviso: {w}</li>
++            ))}
++          </ul>
++        )}
++      </div>
++
++      {s && s.byReach.length > 0 && (
++        <div className="rounded-lg border bg-card p-4 xl:p-5">
++          <div className="mb-2 text-xs font-semibold">Por tipo de loja</div>
++          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
++            {s.byReach.map((g) => (
++              <div key={g.reach} className="rounded-md bg-muted/50 p-3 text-xs">
++                <div className="font-medium capitalize">{reachLabel(g.reach)}</div>
++                <div className="mt-1 tabular-nums text-muted-foreground">
++                  {g.n} oferta{g.n === 1 ? "" : "s"} · mediana {formatBRL(g.median)}
++                </div>
++              </div>
++            ))}
++          </div>
++        </div>
++      )}
++
++      {a.offers.length > 0 && (
++        <div className="rounded-lg border bg-card">
++          <div className="border-b px-4 py-3 text-xs font-semibold">Ofertas encontradas (da mais barata para a mais cara)</div>
++          <div className="overflow-x-auto">
++            <Table>
++              <TableHeader>
++                <TableRow>
++                  <TableHead>Loja</TableHead>
++                  <TableHead>Oferta</TableHead>
++                  <TableHead className="text-right">Preço</TableHead>
++                  <TableHead>Tipo</TableHead>
++                  <TableHead className="w-24 text-right">Página</TableHead>
++                </TableRow>
++              </TableHeader>
++              <TableBody>
++                {a.offers.map((o) => (
++                  <TableRow key={`${o.url}-${o.price}`}>
++                    <TableCell className="whitespace-nowrap text-xs font-medium">{o.store}</TableCell>
++                    <TableCell className="max-w-[420px]">
++                      <div className="line-clamp-2 text-xs">{o.title}</div>
++                      {o.evidence && (
++                        <div className="mt-0.5 line-clamp-1 text-[10px] text-muted-foreground" title={o.evidence}>
++                          “{o.evidence}”
++                        </div>
++                      )}
++                    </TableCell>
++                    <TableCell className="whitespace-nowrap text-right text-sm font-semibold tabular-nums">
++                      {formatBRL(o.price)}
++                      {o.originalPrice !== null && (
++                        <div className="text-[10px] font-normal text-muted-foreground line-through">{formatBRL(o.originalPrice)}</div>
++                      )}
++                    </TableCell>
++                    <TableCell className="whitespace-nowrap text-xs capitalize text-muted-foreground">{reachLabel(o.reach)}</TableCell>
++                    <TableCell className="text-right">
++                      <a
++                        href={safeHref(o.url)}
++                        target="_blank"
++                        rel="noopener noreferrer"
++                        className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
++                      >
++                        Abrir <ArrowUpRight className="size-3" />
++                      </a>
++                    </TableCell>
++                  </TableRow>
++                ))}
++              </TableBody>
++            </Table>
++          </div>
++        </div>
++      )}
++
++      <p className="flex items-start gap-2 text-[11px] text-muted-foreground">
++        <Info className="mt-0.5 size-3.5 shrink-0" />
++        Preços lidos de páginas públicas na data acima; podem ter mudado, e o frete e as condições de pagamento não entram na conta. Confira no link antes de decidir. É um retrato do que apareceu na busca, não uma pesquisa completa do mercado.
++      </p>
++    </section>
++  );
++}
++
++export function PricePage() {
++  const analyze = useServerFn(analyzePricesFn);
++  const listFn = useServerFn(listAnalysesFn);
++  const openFn = useServerFn(getAnalysisFn);
++
++  const [niche, setNiche] = useState("");
++  const [product, setProduct] = useState("");
++  const [region, setRegion] = useState("");
++  const [loading, setLoading] = useState(false);
++  const [step, setStep] = useState(0);
++  const [analysis, setAnalysis] = useState<PriceAnalysis | null>(null);
++  const [persisted, setPersisted] = useState(true);
++  const [error, setError] = useState<string | null>(null);
++  const [history, setHistory] = useState<AnalysisListItem[]>([]);
++
++  function refreshHistory() {
++    listFn()
++      .then((r) => {
++        if (r.ok) setHistory(r.items);
++      })
++      .catch(() => undefined);
++  }
++
++  // eslint-disable-next-line react-hooks/exhaustive-deps
++  useEffect(refreshHistory, []);
++
++  useEffect(() => {
++    if (!loading) return;
++    setStep(0);
++    const t = setInterval(() => setStep((s) => Math.min(s + 1, STEPS.length - 1)), 7000);
++    return () => clearInterval(t);
++  }, [loading]);
++
++  async function onSubmit(e: FormEvent) {
++    e.preventDefault();
++    if (loading) return;
++    if (product.trim().length < 2 || region.trim().length < 2) {
++      setError("Informe o produto e a região.");
++      return;
++    }
++    setError(null);
++    setLoading(true);
++    try {
++      const r = await analyze({ data: { niche: niche.trim(), product: product.trim(), region: region.trim() } });
++      if (!r.ok) {
++        setError(r.error);
++        toast.error(r.error);
++        return;
++      }
++      setAnalysis(r.analysis);
++      setPersisted(r.persisted);
++      if (r.persisted) refreshHistory();
++    } catch {
++      const msg = "Não foi possível concluir a análise. Tente novamente.";
++      setError(msg);
++      toast.error(msg);
++    } finally {
++      setLoading(false);
++    }
++  }
++
++  async function openFromHistory(id: string) {
++    setError(null);
++    try {
++      const r = await openFn({ data: { id } });
++      if (!r.ok) {
++        toast.error(r.error);
++        return;
++      }
++      setAnalysis(r.analysis);
++      setPersisted(true);
++      setProduct(r.analysis.product);
++      setRegion(r.analysis.region);
++      setNiche(r.analysis.niche);
++      window.scrollTo({ top: 0, behavior: "smooth" });
++    } catch {
++      toast.error("Não foi possível abrir esta análise.");
++    }
++  }
++
++  return (
++    <main className="mx-auto max-w-[1600px] px-5 py-7 md:px-8">
++      <div className="mb-6">
++        <h1 className="text-2xl font-bold">Análise de preços de mercado</h1>
++        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
++          Informe o produto e a região. O sistema lê preços em páginas públicas e mostra quanto o mercado cobra: preço típico, faixa, mais barato e promoções.
++        </p>
++      </div>
++
++      <form onSubmit={onSubmit} className="mb-6 grid gap-3 rounded-lg border bg-card p-4 md:grid-cols-[1fr_1.4fr_1fr_auto] md:items-end xl:p-5">
++        <div className="space-y-1.5">
++          <Label htmlFor="niche">Nicho (opcional)</Label>
++          <Input id="niche" value={niche} onChange={(e) => setNiche(e.target.value)} placeholder="ex.: materiais elétricos" maxLength={120} />
++        </div>
++        <div className="space-y-1.5">
++          <Label htmlFor="product">Produto</Label>
++          <Input id="product" value={product} onChange={(e) => setProduct(e.target.value)} placeholder="ex.: disjuntor bipolar 20A" maxLength={160} required />
++        </div>
++        <div className="space-y-1.5">
++          <Label htmlFor="region">Região</Label>
++          <Input id="region" value={region} onChange={(e) => setRegion(e.target.value)} placeholder="ex.: Belo Horizonte, MG" maxLength={120} required />
++        </div>
++        <Button type="submit" disabled={loading} className="md:h-10">
++          {loading ? <RefreshCw className="mr-2 size-4 animate-spin" /> : <Search className="mr-2 size-4" />}
++          {loading ? "Analisando…" : "Analisar preços"}
++        </Button>
++      </form>
++
++      {loading && (
++        <div className="mb-6 rounded-lg border bg-card p-5 text-sm" role="status" aria-live="polite">
++          <div className="font-medium">{STEPS[step]}</div>
++          <div className="mt-1 text-xs text-muted-foreground">Costuma levar de 20 a 60 segundos.</div>
++        </div>
++      )}
++
++      {error && !loading && (
++        <div className="mb-6 rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive" role="alert">
++          {error}
++        </div>
++      )}
++
++      <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
++        <div>
++          {analysis ? (
++            <Results a={analysis} persisted={persisted} />
++          ) : (
++            !loading && (
++              <div className="rounded-lg border border-dashed bg-card/50 p-8 text-sm text-muted-foreground">
++                <p className="font-medium text-foreground">Como funciona</p>
++                <ol className="mt-2 list-decimal space-y-1 pl-5">
++                  <li>Busca páginas públicas que vendem o produto na sua região.</li>
++                  <li>A IA lê o preço de cada página, e o sistema só aceita o que está escrito nela.</li>
++                  <li>Os cálculos (mediana, faixa, mais barato) são feitos pelo sistema, não pela IA.</li>
++                </ol>
++              </div>
++            )
++          )}
++        </div>
++
++        <aside className="space-y-2">
++          <div className="flex items-center gap-2 text-xs font-semibold">
++            <Clock className="size-3.5" /> Análises anteriores
++          </div>
++          {history.length === 0 ? (
++            <p className="text-xs text-muted-foreground">Nenhuma análise salva ainda.</p>
++          ) : (
++            <ul className="space-y-1.5">
++              {history.map((h) => (
++                <li key={h.id}>
++                  <button
++                    type="button"
++                    onClick={() => openFromHistory(h.id)}
++                    className={`w-full rounded-md border bg-card p-2.5 text-left text-xs transition-colors hover:bg-accent ${analysis?.id === h.id ? "border-primary/50" : ""}`}
++                  >
++                    <div className="line-clamp-1 font-medium">{h.product}</div>
++                    <div className="line-clamp-1 text-muted-foreground">{h.region}</div>
++                    <div className="mt-0.5 text-[10px] tabular-nums text-muted-foreground">
++                      {new Date(h.createdAt).toLocaleDateString("pt-BR")} · {h.n} oferta{h.n === 1 ? "" : "s"}
++                      {h.median !== null && ` · mediana ${formatBRL(h.median)}`}
++                    </div>
++                  </button>
++                </li>
++              ))}
++            </ul>
++          )}
++        </aside>
++      </div>
++    </main>
++  );
++}
+diff --git a/src/components/dorradar/shell.tsx b/src/components/dorradar/shell.tsx
+index d5b3492..ed3cc18 100644
+--- a/src/components/dorradar/shell.tsx
++++ b/src/components/dorradar/shell.tsx
+@@ -1,10 +1,10 @@
+ import { useState, type ReactNode } from 'react';
+ import { Link, useRouterState } from '@tanstack/react-router';
+-import { Radar, SlidersHorizontal, Bookmark, Settings, PanelLeftClose, PanelLeftOpen, ChevronDown, ArrowUpRight, CircleHelp, Bell, X, Check } from 'lucide-react';
++import { Radar, PanelLeftClose, PanelLeftOpen, ChevronDown, ArrowUpRight, CircleHelp, Bell, Check, Search } from 'lucide-react';
+ import { Button } from '@/components/ui/button';
+ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+ import { useRadar } from './context';
+-const links = [{ to: '/' as const, label: 'Radar de Oportunidades', icon: Radar }, { to: '/nichos' as const, label: 'Meus Nichos & Gatilhos', icon: SlidersHorizontal }, { to: '/crm' as const, label: 'Leads Salvos', icon: Bookmark }, { to: '/configuracoes' as const, label: 'Configurações', icon: Settings }];
++const links = [{ to: '/' as const, label: 'Análise de Preços', icon: Search }];
+ export function AppShell({ children }: { children: ReactNode }) { const path = useRouterState({ select: s => s.location.pathname }); const [collapsed, setCollapsed] = useState(false); const [help, setHelp] = useState(false); const [notifications, setNotifications] = useState(false); const { saved, monitoring } = useRadar(); return <div className={collapsed ? 'sidebar-collapsed' : ''}>
+ <aside className="app-sidebar"><Link to="/" className="flex h-[86px] items-center gap-2.5 px-6"><div className="relative text-primary"><Radar size={29} strokeWidth={2}/></div><span className="sidebar-label text-[23px] font-bold">DorRadar<span className="text-primary">.</span></span></Link>
+ <div className="sidebar-detail px-7 pb-3 text-[10px] font-semibold uppercase tracking-widest text-sidebar-muted">Workspace</div><nav className="space-y-1 px-3">{links.map(l => <Link key={l.to} to={l.to} className={`nav-item ${path === l.to ? 'active' : ''}`} title={l.label}><l.icon size={18}/><span className="sidebar-label flex-1">{l.label}</span>{l.to === '/crm' && saved.length > 0 && <span className="sidebar-label rounded bg-sidebar-accent px-1.5 text-xs">{saved.length}</span>}</Link>)}</nav>
+diff --git a/src/lib/price-analyses.server.ts b/src/lib/price-analyses.server.ts
+new file mode 100644
+index 0000000..0c0b20e
+--- /dev/null
++++ b/src/lib/price-analyses.server.ts
+@@ -0,0 +1,53 @@
++import { db } from "./workspace.server";
++import type { AnalysisListItem, PriceAnalysis } from "./price-stats";
++
++// Somente servidor (service role). Guarda cada análise inteira como JSON para reabrir depois.
++
++type Row = {
++  id: string;
++  nicho: string;
++  produto: string;
++  regiao: string;
++  created_at: string;
++  resultado: PriceAnalysis;
++};
++
++export async function saveAnalysis(a: PriceAnalysis): Promise<string> {
++  const { data, error } = await db()
++    .from("analises_preco")
++    .insert({ nicho: a.niche, produto: a.product, regiao: a.region, resultado: { ...a, id: null } })
++    .select("id")
++    .single();
++  if (error) throw new Error(`Falha ao salvar análise: ${error.message}`);
++  return (data as { id: string }).id;
++}
++
++export async function listAnalyses(limit = 30): Promise<AnalysisListItem[]> {
++  const { data, error } = await db()
++    .from("analises_preco")
++    .select("id, nicho, produto, regiao, created_at, resultado")
++    .order("created_at", { ascending: false })
++    .limit(limit);
++  if (error) throw new Error(`Falha ao listar análises: ${error.message}`);
++  return ((data ?? []) as Row[]).map((r) => ({
++    id: r.id,
++    niche: r.nicho,
++    product: r.produto,
++    region: r.regiao,
++    createdAt: r.created_at,
++    n: r.resultado?.stats?.n ?? 0,
++    median: r.resultado?.stats?.median ?? null,
++  }));
++}
++
++export async function getAnalysis(id: string): Promise<PriceAnalysis | null> {
++  const { data, error } = await db()
++    .from("analises_preco")
++    .select("id, resultado, created_at")
++    .eq("id", id)
++    .maybeSingle();
++  if (error) throw new Error(`Falha ao abrir análise: ${error.message}`);
++  if (!data) return null;
++  const row = data as { id: string; resultado: PriceAnalysis; created_at: string };
++  return { ...row.resultado, id: row.id, createdAt: row.created_at };
++}
+diff --git a/src/lib/price-search.server.ts b/src/lib/price-search.server.ts
+new file mode 100644
+index 0000000..7734c80
+--- /dev/null
++++ b/src/lib/price-search.server.ts
+@@ -0,0 +1,347 @@
++import { createGoogleGenerativeAI } from "@ai-sdk/google";
++import { generateText, Output, streamText } from "ai";
++import { z } from "zod";
++import {
++  buildSummary,
++  computeStats,
++  emptyDropCounts,
++  isGroundedReading,
++  normalizeUrl,
++  priceAppearsInText,
++  selectComparable,
++  formatBRL,
++  type Offer,
++  type PriceAnalysis,
++} from "./price-stats";
++
++// Somente servidor. A IA só LÊ preços que estão escritos nas páginas; toda conta é feita em price-stats.ts.
++
++const FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v2/search";
++const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
++const FIRECRAWL_TIMEOUT_MS = 75_000;
++const GEMINI_TIMEOUT_MS = 60_000;
++const MAX_PAGES = 14;
++const RESULTS_PER_QUERY = 8;
++
++export type PriceSearchInput = { niche: string; product: string; region: string };
++
++type WebPage = { url: string; title?: string; description?: string; markdown?: string | null };
++
++const adSchema = z.object({
++  title: z.string(),
++  store: z.string(),
++  price: z.number().nullable(),
++  originalPrice: z.number().nullable(),
++  condition: z.enum(["novo", "usado", "recondicionado", "desconhecida"]),
++  reach: z.enum(["local", "nacional", "marketplace", "desconhecido"]),
++  city: z.string(),
++  relevance: z.number(),
++  evidence: z.string(),
++});
++
++const extractionSchema = z.object({
++  pages: z.array(z.object({ index: z.number().int(), ads: z.array(adSchema).max(5) })),
++});
++
++function statusOf(err: unknown, depth = 0): number | undefined {
++  if (!err || depth > 4) return undefined;
++  const e = err as { statusCode?: unknown; lastError?: unknown; errors?: unknown };
++  if (typeof e.statusCode === "number") return e.statusCode;
++  const fromLast = statusOf(e.lastError, depth + 1);
++  if (fromLast) return fromLast;
++  if (Array.isArray(e.errors)) {
++    for (const x of [...e.errors].reverse()) {
++      const s = statusOf(x, depth + 1);
++      if (s) return s;
++    }
++  }
++  return undefined;
++}
++
++function hostOf(url: string): string {
++  try {
++    return new URL(url).hostname.replace(/^www\./, "");
++  } catch {
++    return url;
++  }
++}
++
++// Mantém o começo da página e os trechos em volta de cada "R$", que é onde os preços estão.
++function priceWindows(md: string, max = 2600): string {
++  const headLen = 900;
++  const parts: string[] = [md.slice(0, headLen)];
++  let covered = headLen;
++  let used = headLen;
++  const re = /R\$\s?\d/g;
++  let m: RegExpExecArray | null;
++  while ((m = re.exec(md)) && used < max) {
++    const end = Math.min(md.length, m.index + 160);
++    if (end <= covered) continue;
++    const start = Math.max(covered, m.index - 140);
++    const seg = md.slice(start, end);
++    parts.push(`… ${seg}`);
++    used += seg.length;
++    covered = end;
++  }
++  return parts.join("\n");
++}
++
++async function firecrawlSearch(
++  query: string,
++  key: string,
++  region: string,
++  warnings: string[],
++  failures: number[],
++): Promise<WebPage[]> {
++  const call = async (withLocation: boolean) =>
++    fetch(FIRECRAWL_SEARCH_URL, {
++      method: "POST",
++      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
++      body: JSON.stringify({
++        query,
++        limit: RESULTS_PER_QUERY,
++        country: "BR",
++        ...(withLocation ? { location: `${region}, Brazil` } : {}),
++        timeout: 60_000,
++        scrapeOptions: { formats: [{ type: "markdown" }], onlyMainContent: true },
++      }),
++      signal: AbortSignal.timeout(FIRECRAWL_TIMEOUT_MS),
++    });
++
++  try {
++    let r = await call(true);
++    if (r.status === 400) r = await call(false); // região em texto livre pode ser recusada como localização
++    if (!r.ok) {
++      console.error(`[Preços] Firecrawl ${r.status}: ${(await r.text()).slice(0, 200)}`);
++      failures.push(r.status);
++      return [];
++    }
++    const j = (await r.json()) as { data?: { web?: WebPage[] }; warning?: string | null };
++    if (j.warning) warnings.push(`Firecrawl: ${j.warning}`);
++    return j.data?.web ?? [];
++  } catch (e) {
++    console.error(`[Preços] Firecrawl falhou/timeout em "${query}":`, e);
++    failures.push(0);
++    return [];
++  }
++}
++
++function extractionPrompt(input: PriceSearchInput) {
++  return `Você extrai preços de páginas da web para uma pesquisa de preço de mercado.
++Produto pesquisado: "${input.product}"${input.niche ? ` (segmento: ${input.niche})` : ""}. Região de interesse: "${input.region}".
++
++Para cada página numerada, liste até 5 ofertas do produto (ou de equivalentes diretos) com preço ESCRITO no texto. Regras:
++1. Use apenas números que aparecem no texto. Nunca estime, calcule nem converta moeda.
++2. price = preço à vista em reais, como número (ex.: 1299.9). Se só houver parcelas ("10x de R$ 129,90"), NÃO use a parcela: price = null.
++3. originalPrice = preço "de" (riscado) quando houver promoção; caso contrário null.
++4. Para "a partir de", use o valor e escreva "a partir de" na evidência.
++5. relevance de 0 a 1: 1 = mesmo produto (marca, modelo e especificação iguais ao pesquisado); 0.6 = variação próxima; abaixo de 0.4 = acessório, peça, outro produto ou página que não vende.
++6. condition: "usado" para usado/seminovo; "recondicionado" para recondicionado/reembalado; "novo" para novo ou venda de varejo sem indicação de uso; senão "desconhecida".
++7. reach: "local" se for loja física ou negócio da região do usuário; "marketplace" para Mercado Livre, Amazon, Shopee, OLX, Magalu (vendedores terceiros) e similares; "nacional" para e-commerce de alcance nacional; "desconhecido" se não der para saber.
++8. evidence = trecho curto copiado do texto que contém o preço.
++9. store = nome da loja ou vendedor (se não houver, use o domínio).
++10. city = cidade da oferta se estiver no texto, senão "".
++Se a página não tiver preço, devolva ads vazio. Responda em português.`;
++}
++
++async function extractAds(
++  pages: WebPage[],
++  input: PriceSearchInput,
++  geminiKey: string,
++): Promise<z.infer<typeof extractionSchema>> {
++  const google = createGoogleGenerativeAI({ apiKey: geminiKey });
++  const listing = pages
++    .map((p, i) => `[${i}] URL: ${p.url}\nTítulo: ${p.title ?? ""}\nTexto:\n${priceWindows(p.markdown ?? "")}`)
++    .join("\n\n=====\n\n");
++
++  const primary = process.env["GEMINI_MODEL"]?.trim() || DEFAULT_GEMINI_MODEL;
++  const fallbacks = (process.env["GEMINI_FALLBACK_MODELS"] ?? "")
++    .split(",")
++    .map((s) => s.trim())
++    .filter(Boolean);
++  const models = [...new Set([primary, ...fallbacks])];
++
++  let lastStatus: number | undefined;
++  for (const m of models) {
++    let aiError: unknown = null;
++    const res = streamText({
++      abortSignal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
++      maxRetries: 1,
++      onError: ({ error }) => {
++        aiError = error;
++      },
++      model: google(m),
++      output: Output.object({ schema: extractionSchema }),
++      system: extractionPrompt(input),
++      prompt: listing,
++    });
++    try {
++      return await res.output;
++    } catch (e) {
++      const status = statusOf(aiError) ?? statusOf(e);
++      console.error(`[Preços] Modelo ${m} falhou (status ${status ?? "timeout/rede"}):`, aiError ?? e);
++      if (status === 400 || status === 401 || status === 403) {
++        throw new Error("GEMINI_API_KEY inválida ou sem permissão para o modelo configurado.");
++      }
++      lastStatus = status;
++    }
++  }
++  if (lastStatus === 429) throw new Error("Limite de uso do Gemini atingido. Aguarde um pouco e tente novamente.");
++  if (lastStatus === 503 || lastStatus === 500) {
++    throw new Error("O Gemini está sobrecarregado no momento. Tente novamente em alguns minutos.");
++  }
++  if (lastStatus === 404) throw new Error("Nenhum modelo Gemini encontrado. Verifique GEMINI_MODEL.");
++  throw new Error("A leitura dos preços por IA falhou ou demorou demais. Tente novamente.");
++}
++
++// Leitura opcional em texto. Só é exibida se todos os valores citados existirem nos dados reais.
++async function writeReading(analysis: PriceAnalysis, geminiKey: string): Promise<string | null> {
++  const stats = analysis.stats;
++  if (!stats || stats.n < 3) return null;
++  try {
++    const google = createGoogleGenerativeAI({ apiKey: geminiKey });
++    const model = process.env["GEMINI_MODEL"]?.trim() || DEFAULT_GEMINI_MODEL;
++    const data = {
++      produto: analysis.product,
++      regiao: analysis.region,
++      ofertas: stats.n,
++      lojas: stats.stores,
++      minimo: formatBRL(stats.min),
++      q1: formatBRL(stats.q1),
++      mediana: formatBRL(stats.median),
++      q3: formatBRL(stats.q3),
++      maximo: formatBRL(stats.max),
++      por_alcance: stats.byReach.map((g) => ({
++        alcance: g.reach,
++        ofertas: g.n,
++        minimo: formatBRL(g.min),
++        mediana: formatBRL(g.median),
++      })),
++      confianca: stats.confidence,
++    };
++    const { text } = await generateText({
++      abortSignal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
++      maxRetries: 1,
++      model: google(model),
++      system:
++        "Você é um analista de preços. Escreva de 2 a 4 frases curtas, em português, com uma leitura do cenário: dispersão dos preços, diferença entre tipos de loja e onde pode haver espaço de posicionamento. Regras: use SOMENTE valores em reais que aparecem nos dados, no formato 'R$ 1.234,56'; não invente números, nomes de lojas nem porcentagens; não use o símbolo %; se a confiança for baixa, diga que é indicativo.",
++      prompt: JSON.stringify(data),
++    });
++    const reading = text.trim();
++    const allowed = [
++      stats.min,
++      stats.q1,
++      stats.median,
++      stats.mean,
++      stats.q3,
++      stats.max,
++      ...stats.byReach.flatMap((g) => [g.min, g.median]),
++    ];
++    if (reading.length > 0 && reading.length <= 800 && isGroundedReading(reading, allowed)) return reading;
++    console.warn("[Preços] Leitura da IA descartada: citava valores fora dos dados.");
++    return null;
++  } catch (e) {
++    console.warn("[Preços] Leitura da IA indisponível:", e);
++    return null;
++  }
++}
++
++export async function analyzePrices(input: PriceSearchInput): Promise<PriceAnalysis> {
++  const firecrawlKey = process.env["FIRECRAWL_API_KEY"]?.trim();
++  const geminiKey = process.env["GEMINI_API_KEY"]?.trim();
++  if (!firecrawlKey || !geminiKey) {
++    throw new Error("Busca na web não configurada. Defina FIRECRAWL_API_KEY e GEMINI_API_KEY.");
++  }
++
++  const warnings: string[] = [];
++  const failures: number[] = [];
++  const dropped = emptyDropCounts();
++
++  const queries = [
++    ...new Set([
++      `${input.product} preço ${input.region}`,
++      `${input.niche ? `${input.niche} ` : ""}${input.product} comprar ${input.region}`,
++    ]),
++  ];
++  console.log("[Preços] Buscando:", queries);
++
++  const found = (await Promise.all(queries.map((q) => firecrawlSearch(q, firecrawlKey, input.region, warnings, failures)))).flat();
++
++  const seen = new Set<string>();
++  const pages = found
++    .filter((p) => p.url && (p.markdown ?? "").length > 80)
++    .filter((p) => {
++      const k = normalizeUrl(p.url);
++      if (seen.has(k)) return false;
++      seen.add(k);
++      return true;
++    })
++    .slice(0, MAX_PAGES);
++
++  if (!pages.length) {
++    if (failures.includes(402)) throw new Error("Os créditos do Firecrawl acabaram. Verifique seu plano no Firecrawl.");
++    if (failures.includes(401)) throw new Error("FIRECRAWL_API_KEY inválida.");
++    if (failures.includes(429)) throw new Error("Muitas buscas seguidas. Aguarde 1 minuto e tente novamente.");
++    if (failures.includes(0)) throw new Error("O Firecrawl não respondeu a tempo. Tente novamente.");
++    if (failures.length) throw new Error("A busca na web falhou. Tente novamente.");
++    warnings.push("A busca não retornou páginas com conteúdo.");
++  }
++
++  const offers: Offer[] = [];
++  if (pages.length) {
++    const extracted = await extractAds(pages, input, geminiKey);
++    for (const pg of extracted.pages) {
++      const page = pages[pg.index];
++      if (!page) continue;
++      const text = page.markdown ?? "";
++      for (const ad of pg.ads) {
++        if (ad.price === null || !Number.isFinite(ad.price) || ad.price <= 0) {
++          dropped.sem_preco++;
++          continue;
++        }
++        // Barreira contra preço inventado: o valor precisa estar escrito na página.
++        if (!priceAppearsInText(ad.price, text)) {
++          dropped.sem_evidencia++;
++          continue;
++        }
++        const originalPrice =
++          ad.originalPrice !== null && ad.originalPrice > ad.price && priceAppearsInText(ad.originalPrice, text)
++            ? ad.originalPrice
++            : null;
++        offers.push({
++          store: ad.store.trim() || hostOf(page.url),
++          title: ad.title.trim(),
++          price: ad.price,
++          originalPrice,
++          condition: ad.condition,
++          reach: ad.reach,
++          city: ad.city.trim(),
++          relevance: Math.max(0, Math.min(1, ad.relevance)),
++          url: page.url,
++          evidence: ad.evidence.trim().slice(0, 240),
++        });
++      }
++    }
++  }
++
++  const { kept, dropped: droppedSelect } = selectComparable(offers);
++  for (const k of Object.keys(droppedSelect) as (keyof typeof dropped)[]) dropped[k] += droppedSelect[k];
++
++  const stats = computeStats(kept);
++  const analysis: PriceAnalysis = {
++    id: null,
++    niche: input.niche,
++    product: input.product,
++    region: input.region,
++    createdAt: new Date().toISOString(),
++    pagesScanned: pages.length,
++    offers: kept,
++    droppedCounts: dropped,
++    stats,
++    summary: buildSummary(stats, dropped, input.product, input.region),
++    reading: null,
++    warnings,
++  };
++  analysis.reading = await writeReading(analysis, geminiKey);
++  return analysis;
++}
+diff --git a/src/lib/price-stats.ts b/src/lib/price-stats.ts
+new file mode 100644
+index 0000000..0b4134f
+--- /dev/null
++++ b/src/lib/price-stats.ts
+@@ -0,0 +1,351 @@
++// Núcleo da análise de preços. Código puro (sem rede, sem IA), seguro para o navegador e o servidor.
++// Toda estatística que o usuário vê sai daqui, nunca de um modelo de IA.
++
++export type Condition = "novo" | "usado" | "recondicionado" | "desconhecida";
++export type Reach = "local" | "nacional" | "marketplace" | "desconhecido";
++
++export type Offer = {
++  store: string;
++  title: string;
++  price: number;
++  originalPrice: number | null;
++  condition: Condition;
++  reach: Reach;
++  city: string;
++  relevance: number;
++  url: string;
++  evidence: string;
++};
++
++export type DropReason =
++  | "sem_preco"
++  | "sem_evidencia"
++  | "baixa_relevancia"
++  | "usado"
++  | "duplicada"
++  | "fora_da_curva";
++
++export type DropCounts = Record<DropReason, number>;
++
++export type Bin = { from: number; to: number; count: number };
++export type ReachStat = { reach: Reach; n: number; min: number; median: number };
++export type Confidence = "baixa" | "media" | "alta";
++
++export type PriceStats = {
++  n: number;
++  stores: number;
++  min: number;
++  q1: number;
++  median: number;
++  mean: number;
++  q3: number;
++  max: number;
++  bins: Bin[];
++  byReach: ReachStat[];
++  promo: { n: number; avgDiscountPct: number | null };
++  cheapest: Offer;
++  confidence: Confidence;
++};
++
++export type PriceAnalysis = {
++  id: string | null;
++  niche: string;
++  product: string;
++  region: string;
++  createdAt: string;
++  pagesScanned: number;
++  offers: Offer[];
++  droppedCounts: DropCounts;
++  stats: PriceStats | null;
++  summary: string[];
++  reading: string | null;
++  warnings: string[];
++};
++
++export type AnalysisListItem = {
++  id: string;
++  niche: string;
++  product: string;
++  region: string;
++  createdAt: string;
++  n: number;
++  median: number | null;
++};
++
++export const DROP_LABELS: Record<DropReason, string> = {
++  sem_preco: "sem preço claro",
++  sem_evidencia: "preço não confirmado no texto da página",
++  baixa_relevancia: "produto diferente ou acessório",
++  usado: "usado ou recondicionado",
++  duplicada: "repetida",
++  fora_da_curva: "preço muito fora da faixa",
++};
++
++export function emptyDropCounts(): DropCounts {
++  return {
++    sem_preco: 0,
++    sem_evidencia: 0,
++    baixa_relevancia: 0,
++    usado: 0,
++    duplicada: 0,
++    fora_da_curva: 0,
++  };
++}
++
++export function round2(n: number): number {
++  return Math.round(n * 100) / 100;
++}
++
++export function quantile(sorted: number[], p: number): number {
++  if (!sorted.length) return Number.NaN;
++  const pos = (sorted.length - 1) * p;
++  const lo = Math.floor(pos);
++  const hi = Math.ceil(pos);
++  const a = sorted[lo] as number;
++  const b = sorted[hi] as number;
++  return a + (b - a) * (pos - lo);
++}
++
++export function formatBRL(n: number): string {
++  const cents = Math.round(n * 100);
++  const int = Math.floor(Math.abs(cents) / 100);
++  const frac = String(Math.abs(cents) % 100).padStart(2, "0");
++  const dots = String(int).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
++  return `${cents < 0 ? "-" : ""}R$ ${dots},${frac}`;
++}
++
++// Formas como um preço costuma aparecer escrito em páginas brasileiras.
++export function brVariants(price: number): string[] {
++  const cents = Math.round(price * 100);
++  const int = Math.floor(cents / 100);
++  const frac = String(cents % 100).padStart(2, "0");
++  const dots = String(int).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
++  const set = new Set<string>([`${dots},${frac}`, `${int},${frac}`]);
++  if (frac === "00") {
++    set.add(dots);
++    set.add(String(int));
++  }
++  return [...set];
++}
++
++// Confere se o preço extraído realmente aparece no texto da página (barra preço inventado pela IA).
++export function priceAppearsInText(price: number, text: string): boolean {
++  return brVariants(price).some((v) => {
++    const escaped = v.replace(/[.,]/g, "\\$&");
++    const re = new RegExp(`(?<![\\d.,])${escaped}(?!\\d|,\\d|\\.\\d)`);
++    return re.test(text);
++  });
++}
++
++export function normalizeUrl(raw: string): string {
++  try {
++    const u = new URL(raw);
++    return `${u.hostname.replace(/^www\./, "")}${u.pathname.replace(/\/+$/, "")}`.toLowerCase();
++  } catch {
++    return raw.toLowerCase();
++  }
++}
++
++export function normalizeStore(name: string): string {
++  return name
++    .toLowerCase()
++    .normalize("NFD")
++    .replace(/[̀-ͯ]/g, "")
++    .replace(/[^a-z0-9]+/g, " ")
++    .trim();
++}
++
++export type SelectOptions = { minRelevance?: number; allowUsed?: boolean };
++
++// Escolhe as ofertas comparáveis e conta por que descartou as demais.
++export function selectComparable(
++  offers: Offer[],
++  options: SelectOptions = {},
++): { kept: Offer[]; dropped: DropCounts } {
++  const { minRelevance = 0.6, allowUsed = false } = options;
++  const dropped = emptyDropCounts();
++  const seen = new Set<string>();
++  let kept: Offer[] = [];
++
++  for (const o of offers) {
++    if (!Number.isFinite(o.price) || o.price <= 0) {
++      dropped.sem_preco++;
++      continue;
++    }
++    if (o.relevance < minRelevance) {
++      dropped.baixa_relevancia++;
++      continue;
++    }
++    if (!allowUsed && (o.condition === "usado" || o.condition === "recondicionado")) {
++      dropped.usado++;
++      continue;
++    }
++    const key = `${normalizeUrl(o.url)}|${round2(o.price)}`;
++    if (seen.has(key)) {
++      dropped.duplicada++;
++      continue;
++    }
++    seen.add(key);
++    kept.push(o);
++  }
++
++  // Corta preços absurdos (ex.: um kit de 10 unidades ou um erro de leitura) quando há amostra suficiente.
++  if (kept.length >= 5) {
++    const sorted = kept.map((o) => o.price).sort((a, b) => a - b);
++    const q1 = quantile(sorted, 0.25);
++    const q3 = quantile(sorted, 0.75);
++    const median = quantile(sorted, 0.5);
++    const margin = Math.max(1.5 * (q3 - q1), 0.3 * median);
++    const low = q1 - margin;
++    const high = q3 + margin;
++    const inside = kept.filter((o) => o.price >= low && o.price <= high);
++    dropped.fora_da_curva += kept.length - inside.length;
++    kept = inside;
++  }
++
++  kept.sort((a, b) => a.price - b.price);
++  return { kept, dropped };
++}
++
++export function histogram(values: number[], bins = 6): Bin[] {
++  if (!values.length) return [];
++  const min = Math.min(...values);
++  const max = Math.max(...values);
++  if (min === max) return [{ from: round2(min), to: round2(max), count: values.length }];
++  const width = (max - min) / bins;
++  const out: Bin[] = Array.from({ length: bins }, (_, i) => ({
++    from: round2(min + i * width),
++    to: round2(min + (i + 1) * width),
++    count: 0,
++  }));
++  for (const v of values) {
++    const i = Math.min(bins - 1, Math.floor((v - min) / width));
++    (out[i] as Bin).count++;
++  }
++  return out;
++}
++
++function confidenceOf(n: number, stores: number): Confidence {
++  const base: Confidence = n < 5 ? "baixa" : n < 12 ? "media" : "alta";
++  if (stores < 3 && base === "alta") return "media";
++  if (stores < 3 && base === "media") return "baixa";
++  return base;
++}
++
++export function computeStats(kept: Offer[]): PriceStats | null {
++  if (!kept.length) return null;
++  const prices = kept.map((o) => o.price).sort((a, b) => a - b);
++  const stores = new Set(kept.map((o) => normalizeStore(o.store) || normalizeUrl(o.url))).size;
++
++  const groups = new Map<Reach, number[]>();
++  for (const o of kept) groups.set(o.reach, [...(groups.get(o.reach) ?? []), o.price]);
++  const byReach: ReachStat[] = [...groups.entries()]
++    .map(([reach, list]) => {
++      const s = [...list].sort((a, b) => a - b);
++      return {
++        reach,
++        n: s.length,
++        min: round2(s[0] as number),
++        median: round2(quantile(s, 0.5)),
++      };
++    })
++    .sort((a, b) => b.n - a.n);
++
++  const promos = kept.filter((o) => o.originalPrice !== null && o.originalPrice > o.price);
++  const avgDiscountPct = promos.length
++    ? Math.round(
++        (promos.reduce((acc, o) => acc + ((o.originalPrice as number) - o.price) / (o.originalPrice as number), 0) /
++          promos.length) *
++          1000,
++      ) / 10
++    : null;
++
++  return {
++    n: prices.length,
++    stores,
++    min: round2(prices[0] as number),
++    q1: round2(quantile(prices, 0.25)),
++    median: round2(quantile(prices, 0.5)),
++    mean: round2(prices.reduce((a, b) => a + b, 0) / prices.length),
++    q3: round2(quantile(prices, 0.75)),
++    max: round2(prices[prices.length - 1] as number),
++    bins: histogram(prices),
++    byReach,
++    promo: { n: promos.length, avgDiscountPct },
++    cheapest: [...kept].sort((a, b) => a.price - b.price)[0] as Offer,
++    confidence: confidenceOf(prices.length, stores),
++  };
++}
++
++const REACH_LABEL: Record<Reach, string> = {
++  local: "lojas locais",
++  nacional: "lojas online nacionais",
++  marketplace: "marketplaces",
++  desconhecido: "lojas de alcance não identificado",
++};
++export const reachLabel = (r: Reach): string => REACH_LABEL[r];
++
++// Resumo determinístico: só frases montadas com os números calculados acima.
++export function buildSummary(
++  stats: PriceStats | null,
++  dropped: DropCounts,
++  product: string,
++  region: string,
++): string[] {
++  const out: string[] = [];
++  if (!stats) {
++    out.push(`Não encontramos ofertas comparáveis de "${product}" em páginas públicas para ${region}.`);
++  } else {
++    out.push(
++      `Encontramos ${stats.n} oferta${stats.n === 1 ? "" : "s"} comparáve${stats.n === 1 ? "l" : "is"} de "${product}" em ${stats.stores} loja${stats.stores === 1 ? "" : "s"} (busca para ${region}).`,
++    );
++    out.push(
++      `Preço típico (mediana): ${formatBRL(stats.median)}. Faixa: ${formatBRL(stats.min)} a ${formatBRL(stats.max)}; metade das ofertas fica entre ${formatBRL(stats.q1)} e ${formatBRL(stats.q3)}.`,
++    );
++    out.push(`Oferta mais barata: ${stats.cheapest.store} por ${formatBRL(stats.cheapest.price)}.`);
++    if (stats.promo.n > 0) {
++      out.push(
++        `${stats.promo.n} oferta${stats.promo.n === 1 ? "" : "s"} em promoção${stats.promo.avgDiscountPct !== null ? `, com desconto médio de ${String(stats.promo.avgDiscountPct).replace(".", ",")}%` : ""}.`,
++      );
++    }
++    const local = stats.byReach.find((g) => g.reach === "local");
++    const others = stats.byReach.filter((g) => g.reach !== "local" && g.reach !== "desconhecido");
++    if (local && others.length) {
++      const total = others.reduce((a, g) => a + g.n, 0);
++      out.push(
++        `${reachLabel("local")[0]!.toUpperCase()}${reachLabel("local").slice(1)}: mediana de ${formatBRL(local.median)} (${local.n} oferta${local.n === 1 ? "" : "s"}). Online (nacionais e marketplaces): ${total} oferta${total === 1 ? "" : "s"}, a partir de ${formatBRL(Math.min(...others.map((g) => g.min)))}.`,
++      );
++    }
++    if (stats.confidence === "baixa") {
++      out.push("Poucas ofertas ou poucas lojas: trate o resultado como indicativo, não como média de mercado.");
++    }
++  }
++  const droppedTotal = Object.values(dropped).reduce((a, b) => a + b, 0);
++  if (droppedTotal > 0) {
++    const parts = (Object.keys(dropped) as DropReason[])
++      .filter((k) => dropped[k] > 0)
++      .map((k) => `${dropped[k]} ${DROP_LABELS[k]}`);
++    out.push(`Resultados descartados: ${parts.join("; ")}.`);
++  }
++  return out;
++}
++
++// Valores em reais citados em um texto (ex.: "R$ 1.299,90").
++export function extractBRLAmounts(text: string): number[] {
++  const out: number[] = [];
++  const re = /R\$\s*(\d{1,3}(?:\.\d{3})*|\d+)(?:,(\d{1,2}))?/g;
++  let m: RegExpExecArray | null;
++  while ((m = re.exec(text))) {
++    const int = Number((m[1] as string).replace(/\./g, ""));
++    const frac = m[2] ? Number(m[2].padEnd(2, "0")) / 100 : 0;
++    out.push(round2(int + frac));
++  }
++  return out;
++}
++
++// Um texto escrito pela IA só é aceito se todo valor em reais citado existir nos dados reais e sem percentuais.
++export function isGroundedReading(text: string, allowed: number[]): boolean {
++  if (text.includes("%")) return false;
++  const set = allowed.map(round2);
++  return extractBRLAmounts(text).every((v) => set.some((a) => Math.abs(a - v) < 0.011));
++}
+diff --git a/src/lib/price.functions.ts b/src/lib/price.functions.ts
+new file mode 100644
+index 0000000..43ad6e7
+--- /dev/null
++++ b/src/lib/price.functions.ts
+@@ -0,0 +1,61 @@
++import { createServerFn } from "@tanstack/react-start";
++import { z } from "zod";
++import type { AnalysisListItem, PriceAnalysis } from "./price-stats";
++
++const analyzeInput = z.object({
++  niche: z.string().trim().max(120).default(""),
++  product: z.string().trim().min(2).max(160),
++  region: z.string().trim().min(2).max(120),
++});
++
++export const analyzePricesFn = createServerFn({ method: "POST" })
++  .inputValidator((d) => analyzeInput.parse(d))
++  .handler(
++    async ({
++      data,
++    }): Promise<{ ok: true; analysis: PriceAnalysis; persisted: boolean } | { ok: false; error: string }> => {
++      try {
++        const { analyzePrices } = await import("./price-search.server");
++        const analysis = await analyzePrices(data);
++        // Persistir é "melhor esforço": sem banco configurado, o usuário ainda vê o resultado.
++        try {
++          const { saveAnalysis } = await import("./price-analyses.server");
++          const id = await saveAnalysis(analysis);
++          return { ok: true, analysis: { ...analysis, id }, persisted: true };
++        } catch (e) {
++          console.error("[Preços] Persistência falhou; devolvendo resultado em memória.", e);
++          return { ok: true, analysis, persisted: false };
++        }
++      } catch (e) {
++        console.error(e);
++        return { ok: false, error: e instanceof Error ? e.message : "Falha na análise de preços" };
++      }
++    },
++  );
++
++export const listAnalysesFn = createServerFn({ method: "GET" }).handler(
++  async (): Promise<{ ok: true; items: AnalysisListItem[] } | { ok: false; error: string }> => {
++    try {
++      const { listAnalyses } = await import("./price-analyses.server");
++      return { ok: true, items: await listAnalyses() };
++    } catch (e) {
++      console.error(e);
++      return { ok: false, error: e instanceof Error ? e.message : "Falha ao listar análises" };
++    }
++  },
++);
++
++export const getAnalysisFn = createServerFn({ method: "POST" })
++  .inputValidator((d) => z.object({ id: z.string().uuid() }).parse(d))
++  .handler(
++    async ({ data }): Promise<{ ok: true; analysis: PriceAnalysis } | { ok: false; error: string }> => {
++      try {
++        const { getAnalysis } = await import("./price-analyses.server");
++        const analysis = await getAnalysis(data.id);
++        return analysis ? { ok: true, analysis } : { ok: false, error: "Análise não encontrada." };
++      } catch (e) {
++        console.error(e);
++        return { ok: false, error: e instanceof Error ? e.message : "Falha ao abrir análise" };
++      }
++    },
++  );
+diff --git a/src/lib/workspace.server.ts b/src/lib/workspace.server.ts
+index c40ba63..9d099a2 100644
+--- a/src/lib/workspace.server.ts
++++ b/src/lib/workspace.server.ts
+@@ -4,7 +4,7 @@ import { leadToInsert, rowToLead, type LeadRow } from './workspace-mappers';
+ 
+ // Somente servidor: usa a service role, que ignora o RLS. Nunca importe este módulo no navegador.
+ let client: SupabaseClient | undefined;
+-function db(): SupabaseClient {
++export function db(): SupabaseClient {
+   const url = process.env['SUPABASE_URL'];
+   const key = process.env['SUPABASE_SERVICE_ROLE_KEY'];
+   if (!url || !key) throw new Error('Banco não configurado. Defina SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY.');
+diff --git a/src/routes/index.tsx b/src/routes/index.tsx
+index c2ac18f..9dc96e8 100644
+--- a/src/routes/index.tsx
++++ b/src/routes/index.tsx
+@@ -1,16 +1,23 @@
+ import { createFileRoute } from "@tanstack/react-router";
+-import { RadarPage } from '@/components/dorradar/radar';
++import { PricePage } from "@/components/dorradar/price-page";
+ 
+-// The home route ships no og:image, so serve-time hosting can inject the
+-// project's social preview (explicit og:image or latest screenshot).
++// A rota inicial não define og:image: a hospedagem injeta a prévia social do projeto.
+ export const Route = createFileRoute("/")({
+-  head: () => ({ meta: [
+-    { title: 'Radar de Oportunidades | DorRadar' },
+-    { name: 'description', content: 'Encontre oportunidades B2B no Brasil com sinais de intenção de compra, filtros e abordagens personalizadas.' },
+-    { property: 'og:title', content: 'Radar de Oportunidades | DorRadar' },
+-    { property: 'og:description', content: 'Inteligência comercial para encontrar o próximo cliente no momento certo.' },
+-    { property: 'og:type', content: 'website' },
+-    { name: 'twitter:card', content: 'summary_large_image' },
+-  ] }),
+-  component: RadarPage,
++  head: () => ({
++    meta: [
++      { title: "Análise de Preços de Mercado | DorRadar" },
++      {
++        name: "description",
++        content: "Descubra quanto o mercado cobra por um produto na sua região, com base em preços de páginas públicas.",
++      },
++      { property: "og:title", content: "Análise de Preços de Mercado | DorRadar" },
++      {
++        property: "og:description",
++        content: "Preço típico, faixa, mais barato e promoções de um produto na sua região.",
++      },
++      { property: "og:type", content: "website" },
++      { name: "twitter:card", content: "summary_large_image" },
++    ],
++  }),
++  component: PricePage,
+ });
+diff --git a/src/test/price-stats.test.ts b/src/test/price-stats.test.ts
+new file mode 100644
+index 0000000..6326204
+--- /dev/null
++++ b/src/test/price-stats.test.ts
+@@ -0,0 +1,163 @@
++import { describe, expect, it } from "vitest";
++import {
++  buildSummary,
++  computeStats,
++  extractBRLAmounts,
++  formatBRL,
++  histogram,
++  isGroundedReading,
++  priceAppearsInText,
++  quantile,
++  selectComparable,
++  type Offer,
++} from "@/lib/price-stats";
++
++const offer = (over: Partial<Offer> & { price: number }): Offer => ({
++  store: "Loja",
++  title: "Produto",
++  originalPrice: null,
++  condition: "novo",
++  reach: "nacional",
++  city: "",
++  relevance: 1,
++  url: `https://loja.com/p/${over.price}`,
++  evidence: "",
++  ...over,
++});
++
++describe("formatBRL", () => {
++  it("formats with thousands dots and comma cents", () => {
++    expect(formatBRL(1299.9)).toBe("R$ 1.299,90");
++    expect(formatBRL(5)).toBe("R$ 5,00");
++    expect(formatBRL(1234567.891)).toBe("R$ 1.234.567,89");
++  });
++});
++
++describe("quantile", () => {
++  it("interpolates between values", () => {
++    expect(quantile([1, 2, 3, 4], 0.5)).toBe(2.5);
++    expect(quantile([10], 0.25)).toBe(10);
++  });
++});
++
++describe("priceAppearsInText", () => {
++  it("finds a price written in Brazilian format", () => {
++    expect(priceAppearsInText(1299.9, "Por apenas R$ 1.299,90 à vista")).toBe(true);
++    expect(priceAppearsInText(129.9, "R$ 129,90")).toBe(true);
++  });
++
++  it("does not match a different price that shares digits", () => {
++    expect(priceAppearsInText(129, "10x de R$ 129,90")).toBe(false);
++    expect(priceAppearsInText(29.9, "R$ 129,90")).toBe(false);
++    expect(priceAppearsInText(1299, "R$ 1.299,90")).toBe(false);
++  });
++
++  it("accepts round prices written without cents", () => {
++    expect(priceAppearsInText(150, "Preço: R$ 150 no pix")).toBe(true);
++  });
++});
++
++describe("selectComparable", () => {
++  it("drops items without price, low relevance, used and duplicates, and counts why", () => {
++    const { kept, dropped } = selectComparable([
++      offer({ price: 100 }),
++      offer({ price: 0 }),
++      offer({ price: 110, relevance: 0.3 }),
++      offer({ price: 90, condition: "usado" }),
++      offer({ price: 100 }),
++      offer({ price: 120, url: "https://outra.com/x" }),
++    ]);
++    expect(kept.map((o) => o.price)).toEqual([100, 120]);
++    expect(dropped.sem_preco).toBe(1);
++    expect(dropped.baixa_relevancia).toBe(1);
++    expect(dropped.usado).toBe(1);
++    expect(dropped.duplicada).toBe(1);
++  });
++
++  it("removes absurd outliers only when there is enough data", () => {
++    const base = [100, 102, 105, 98, 101, 99].map((p) => offer({ price: p }));
++    const withOutlier = [...base, offer({ price: 900 })];
++    const { kept, dropped } = selectComparable(withOutlier);
++    expect(kept.some((o) => o.price === 900)).toBe(false);
++    expect(dropped.fora_da_curva).toBe(1);
++
++    const few = selectComparable([offer({ price: 100 }), offer({ price: 900 })]);
++    expect(few.kept).toHaveLength(2);
++  });
++
++  it("keeps small differences when prices are tightly clustered", () => {
++    const tight = [100, 100, 100, 100, 105].map((p, i) => offer({ price: p, url: `https://l.com/${i}` }));
++    expect(selectComparable(tight).kept).toHaveLength(5);
++  });
++});
++
++describe("histogram", () => {
++  it("counts every value exactly once", () => {
++    const values = [10, 12, 15, 20, 25, 30, 30];
++    const bins = histogram(values, 4);
++    expect(bins.reduce((a, b) => a + b.count, 0)).toBe(values.length);
++    expect(bins).toHaveLength(4);
++  });
++
++  it("returns a single bin when all prices are equal", () => {
++    expect(histogram([50, 50, 50])).toEqual([{ from: 50, to: 50, count: 3 }]);
++  });
++});
++
++describe("computeStats", () => {
++  const kept = [
++    offer({ price: 100, store: "A", reach: "local" }),
++    offer({ price: 120, store: "B", reach: "nacional", originalPrice: 150 }),
++    offer({ price: 140, store: "C", reach: "marketplace" }),
++    offer({ price: 160, store: "D", reach: "nacional" }),
++  ];
++
++  it("computes the main figures", () => {
++    const s = computeStats(kept)!;
++    expect(s.n).toBe(4);
++    expect(s.stores).toBe(4);
++    expect(s.min).toBe(100);
++    expect(s.max).toBe(160);
++    expect(s.median).toBe(130);
++    expect(s.mean).toBe(130);
++    expect(s.cheapest.store).toBe("A");
++    expect(s.promo.n).toBe(1);
++    expect(s.promo.avgDiscountPct).toBe(20);
++  });
++
++  it("returns null with no offers and low confidence with few", () => {
++    expect(computeStats([])).toBeNull();
++    expect(computeStats(kept)!.confidence).toBe("baixa");
++  });
++});
++
++describe("buildSummary", () => {
++  it("states only computed numbers", () => {
++    const kept = [100, 120, 140, 160].map((p, i) => offer({ price: p, store: `L${i}`, url: `https://l.com/${i}` }));
++    const lines = buildSummary(computeStats(kept), { sem_preco: 2, sem_evidencia: 0, baixa_relevancia: 0, usado: 0, duplicada: 0, fora_da_curva: 0 }, "Disjuntor 20A", "Belo Horizonte, MG");
++    const text = lines.join(" ");
++    expect(text).toContain("R$ 130,00");
++    expect(text).toContain("R$ 100,00 a R$ 160,00");
++    expect(text).toContain("2 sem preço claro");
++  });
++
++  it("explains when nothing was found", () => {
++    const lines = buildSummary(null, { sem_preco: 0, sem_evidencia: 0, baixa_relevancia: 0, usado: 0, duplicada: 0, fora_da_curva: 0 }, "X", "Y");
++    expect(lines[0]).toContain("Não encontramos");
++  });
++});
++
++describe("AI reading guard", () => {
++  it("extracts reais amounts", () => {
++    expect(extractBRLAmounts("de R$ 1.299,90 por R$ 999 ou R$ 85,5")).toEqual([1299.9, 999, 85.5]);
++  });
++
++  it("accepts text whose amounts all exist in the data", () => {
++    expect(isGroundedReading("A mediana é R$ 130,00 e o mínimo R$ 100,00.", [130, 100, 160])).toBe(true);
++  });
++
++  it("rejects invented amounts and percentages", () => {
++    expect(isGroundedReading("A mediana é R$ 131,00.", [130, 100])).toBe(false);
++    expect(isGroundedReading("Há 20% de desconto.", [130])).toBe(false);
++  });
++});
+diff --git a/supabase/migrations/0002_analises_preco.sql b/supabase/migrations/0002_analises_preco.sql
+new file mode 100644
+index 0000000..0aedee6
+--- /dev/null
++++ b/supabase/migrations/0002_analises_preco.sql
+@@ -0,0 +1,18 @@
++-- DorRadar: análises de preço de mercado (fase sem login).
++-- Cada linha guarda uma análise completa como JSON, para reabrir no histórico.
++-- RLS ligado e SEM policies: a chave anon não lê nem escreve. Acesso só pelo servidor (service role).
++-- Quando o login entrar, adicionamos user_id e policies por usuário.
++
++create table if not exists public.analises_preco (
++  id uuid primary key default gen_random_uuid(),
++  nicho text not null default '',
++  produto text not null,
++  regiao text not null,
++  resultado jsonb not null,
++  created_at timestamptz not null default now()
++);
++
++create index if not exists analises_preco_created_at_idx
++  on public.analises_preco (created_at desc);
++
++alter table public.analises_preco enable row level security;
+-- 
+2.43.0
+

@@ -81,7 +81,7 @@ export async function searchRealLeads(input: {
     ]),
   ].filter(Boolean).slice(0, 4);
 
-  console.log('[DorRadar] Buscando no Firecrawl:', queries);
+  console.log('[PriceSearch] Buscando no Firecrawl:', queries);
 
   const failures: number[] = [];
   const results = (
@@ -95,14 +95,14 @@ export async function searchRealLeads(input: {
             signal: AbortSignal.timeout(FIRECRAWL_TIMEOUT_MS),
           });
           if (!r.ok) {
-            console.error(`[DorRadar] Firecrawl ${r.status}: ${(await r.text()).slice(0, 200)}`);
+            console.error(`[PriceSearch] Firecrawl ${r.status}: ${(await r.text()).slice(0, 200)}`);
             failures.push(r.status);
             return [];
           }
           const j = (await r.json()) as { data?: { web?: WebResult[] } };
           return j.data?.web ?? [];
         } catch (e) {
-          console.error(`[DorRadar] Firecrawl falhou/timeout em "${query}":`, e);
+          console.error(`[PriceSearch] Firecrawl falhou/timeout em "${query}":`, e);
           failures.push(0);
           return [];
         }
@@ -113,7 +113,7 @@ export async function searchRealLeads(input: {
     .filter((v, i, a) => a.findIndex((x) => x.url === v.url) === i)
     .slice(0, 15);
 
-  console.log('[DorRadar] Resultados únicos enviados para a IA:', results.length);
+  console.log('[PriceSearch] Resultados únicos enviados para a IA:', results.length);
 
   if (!results.length) {
     if (failures.includes(402)) throw new Error('Os créditos do Firecrawl acabaram. Verifique seu plano no Firecrawl.');
@@ -140,7 +140,7 @@ Use o score de 0 a 100 para força do sinal, e urgency correspondente (Alta, Mé
   let lastStatus: number | undefined;
 
   for (const m of models) {
-    console.log('[DorRadar] Chamando Gemini, modelo:', m);
+    console.log('[PriceSearch] Chamando Gemini, modelo:', m);
 
     let aiError = null as unknown;
     const res = streamText({
@@ -158,7 +158,7 @@ Use o score de 0 a 100 para força do sinal, e urgency correspondente (Alta, Mé
     try {
       out = await res.output;
       console.log(
-        `[DorRadar] IA (${m}) devolveu`,
+        `[PriceSearch] IA (${m}) devolveu`,
         out.items.length,
         'itens;',
         out.items.filter((x) => x.isOpportunity).length,
@@ -167,7 +167,7 @@ Use o score de 0 a 100 para força do sinal, e urgency correspondente (Alta, Mé
       break;
     } catch (e) {
       const status = statusOf(aiError) ?? statusOf(e);
-      console.error(`[DorRadar] Modelo ${m} falhou (status ${status ?? 'timeout/rede'}):`, aiError ?? e);
+      console.error(`[PriceSearch] Modelo ${m} falhou (status ${status ?? 'timeout/rede'}):`, aiError ?? e);
 
       if (status === 400 || status === 401 || status === 403) {
         throw new Error('GEMINI_API_KEY inválida ou sem permissão para o modelo configurado.');
